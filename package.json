@@ -1,0 +1,41 @@
+{
+  "name": "pi-provider-status",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./index.ts",
+  "files": [
+    "package.json",
+    "package-lock.json",
+    "index.ts",
+    "config.ts",
+    "config-edit.ts",
+    "config-store.ts",
+    "balance-draft.ts",
+    "balance-service.ts",
+    "balance-request.ts",
+    "balance-extractor.ts",
+    "reconcile.ts",
+    "types.ts",
+    "tui/persistent-menu.ts",
+    "tui/balance-dashboard.ts",
+    "tui/balance-editor.ts",
+    "tui/kv-editor.ts",
+    "README.md"
+  ],
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "dependencies": {
+    "yaml": "2.8.1"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=0.84.3",
+    "@earendil-works/pi-tui": ">=0.75.0"
+  },
+  "scripts": {
+    "test": "node --experimental-strip-types --test tests/*.test.ts"
+  }
+}
