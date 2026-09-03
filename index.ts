@@ -86,14 +86,19 @@ export default function providerStatusExtension(pi: ExtensionAPI): void {
 		const model = ctx.model;
 		if (!model) return;
 		current = model.provider;
-		const auth = await ctx.modelRegistry.getProviderAuth(model.provider);
-		await service.refresh(model.provider, { baseUrl: model.baseUrl, apiKey: auth?.auth.apiKey }, force);
+		// 用与聊天请求完全相同的认证解析（models.json apiKey / OAuth），
+		// 而不是 getProviderAuth：后者只查 auth.json 且大小写敏感，
+		// pi 把小写 provider id 解析到 models.json 里大小写不同的 ID 时会拿不到 key。
+		const resolved = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+		await service.refresh(model.provider, { baseUrl: model.baseUrl, apiKey: resolved.ok ? resolved.apiKey : undefined }, force);
 		update(ctx);
 	};
 
 	const showStatus = (ctx: ExtensionContext) => {
 		const state: BalanceState = current ? service.get(current) : { text: "--", loading: false };
-		notifySafe(ctx, `Balance: ${current ?? "no model"} ${formatBalance(state)}; TPS ${tps === undefined ? "--" : tps.toFixed(1)}`, "info");
+		// 状态栏只显示 unavailable，这里带上具体错误，方便定位配置问题。
+		const detail = state.error ? ` (${state.error})` : "";
+		notifySafe(ctx, `Balance: ${current ?? "no model"} ${formatBalance(state)}${detail}; TPS ${tps === undefined ? "--" : tps.toFixed(1)}`, "info");
 	};
 
 	pi.registerCommand("balance", {
