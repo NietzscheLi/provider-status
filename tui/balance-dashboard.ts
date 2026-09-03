@@ -9,7 +9,9 @@
 // 只触碰被编辑的条目，外部并发修改不会导致保存失败。
 
 import type { ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent";
-import { existsSync, readFileSync } from "node:fs";import {
+import { existsSync, readFileSync } from "node:fs";
+import { BUILTIN_PROFILES, getBuiltinProviderIds, isBuiltinProfile } from "../builtin.ts";
+import {
 	editConfigDocument,
 	overwriteConfigFile,
 	profileExists,
@@ -20,7 +22,7 @@ import { existsSync, readFileSync } from "node:fs";import {
 } from "../config-edit.ts";
 import { configFingerprint, serializeBalanceConfig } from "../config-store.ts";
 import { configPath, readConfig, refreshInterval } from "../config.ts";
-import { modelsPath, readModelsProviderIds } from "../reconcile.ts";
+import { modelsPath, readModelsProviderIds, readKnownProviderIds } from "../reconcile.ts";
 import type { JsonObject } from "../types.ts";
 import { editBalanceEntry } from "./balance-editor.ts";
 import { padLabel, showOptionPicker, showPersistentShortcutMenu, type MenuCursor, type MenuRow } from "./persistent-menu.ts";
@@ -66,9 +68,10 @@ function entrySummary(entry: JsonObject | undefined): string[] {
 
 export async function runBalanceDashboard(ctx: ExtensionCommandContext, agentDir: string): Promise<void> {
 	const cursor: MenuCursor = { index: 0 };
+	const builtinIds = await getBuiltinProviderIds();
 	while (true) {
 		// 每轮都从磁盘重读，外部修改不会让面板卡在旧状态上。
-		const providerIds = existsSync(modelsPath(agentDir)) ? readModelsProviderIds(modelsPath(agentDir)) : new Set<string>();
+		const modelsProviderIds = existsSync(modelsPath(agentDir)) ? readModelsProviderIds(modelsPath(agentDir)) : new Set<string>();
 		const providers = readSectionEntries(agentDir, "providers");
 		const profiles = readSectionEntries(agentDir, "profiles");
 		const orphans = readSectionEntries(agentDir, "orphanProviders");
@@ -79,11 +82,13 @@ export async function runBalanceDashboard(ctx: ExtensionCommandContext, agentDir
 			id: "refresh",
 			label: padLabel("刷新间隔", 16) + `${interval} 分钟`,
 		}];
-		for (const id of [...new Set([...providerIds, ...Object.keys(providers)])].sort()) {
+		// providers 列表 = models.json ∪ pi 内置 provider ∪ 已有配置键；内置且不在 models.json 的加 [内置] 标记。
+		for (const id of [...new Set([...modelsProviderIds, ...builtinIds, ...Object.keys(providers)])].sort()) {
+			const builtinOnly = builtinIds.has(id) && !modelsProviderIds.has(id);
 			rows.push({
 				meta: { kind: "provider", id },
 				id: `provider:${id}`,
-				label: padLabel(id, 28) + describeEntry(providers[id]),
+				label: padLabel(builtinOnly ? `[内置] ${id}` : id, 28) + describeEntry(providers[id]),
 				searchText: id,
 			});
 		}
@@ -112,13 +117,14 @@ export async function runBalanceDashboard(ctx: ExtensionCommandContext, agentDir
 			return entrySummary(orphans[row.meta.id]);
 		};
 
-		const action = await showPersistentShortcutMenu<"new" | "raw" | "quit" | "delete">(
+		const action = await showPersistentShortcutMenu<"new-provider" | "new" | "raw" | "quit" | "delete">(
 			ctx,
 			"balance-config",
 			"",
 			rows.map((row) => ({ ...row })),
 			cursor,
 			[
+				{ input: "p", shortcut: "new-provider" },
 				{ input: "n", shortcut: "new" },
 				{ input: "d", shortcut: "delete" },
 				{ input: "y", shortcut: "raw" },
@@ -127,7 +133,7 @@ export async function runBalanceDashboard(ctx: ExtensionCommandContext, agentDir
 			{
 				getSummaryLines: () => [
 					`providers ${Object.keys(providers).length} · profiles ${Object.keys(profiles).length} · orphan ${Object.keys(orphans).length} · 刷新 ${interval} 分钟`,
-					"profile 是请求模板，provider 绑定模板并可覆盖同名字段；隔离条目可恢复或删除",
+					"profile 是请求模板，provider 绑定模板并可覆盖同名字段；[内置] 行来自 pi 内置目录，不在 models.json 里",
 				],
 				tableHeader: padLabel("条目", 28) + "绑定",
 				formatRow: (row) => row.label,
@@ -136,6 +142,7 @@ export async function runBalanceDashboard(ctx: ExtensionCommandContext, agentDir
 				hints: [
 					{ key: "↑↓", label: "选择" },
 					{ key: "Enter", label: "编辑" },
+					{ key: "P", label: "新建 Provider 配置" },
 					{ key: "n", label: "新建模板" },
 					{ key: "d", label: "删除" },
 					{ key: "y", label: "原始 YAML" },
@@ -145,6 +152,11 @@ export async function runBalanceDashboard(ctx: ExtensionCommandContext, agentDir
 		);
 
 		if (action.type === "cancel" || (action.type === "shortcut" && action.shortcut === "quit")) return;
+
+		if (action.type === "shortcut" && action.shortcut === "new-provider") {
+			await createProviderEntry(ctx, agentDir, readKnownProviderIds(modelsPath(agentDir), builtinIds), providers);
+			continue;
+		}
 
 		if (action.type === "shortcut" && action.shortcut === "new") {
 			const name = await ctx.ui.input("新模板 ID（将创建 profiles.<id>）", "");
@@ -205,6 +217,10 @@ export async function runBalanceDashboard(ctx: ExtensionCommandContext, agentDir
 			const isProfileDelete = selected.meta.kind === "profile";
 			const deleteSection = isProfileDelete ? "profiles" : "providers";
 			const deleteId = isProfileDelete ? selected.meta.name : selected.meta.id;
+			if (selected.meta.kind === "provider" && !providers[selected.meta.id]) {
+				await ctx.ui.notify(`${deleteId} 尚无余额配置；按 P 新建`, "info");
+				continue;
+			}
 			if (await ctx.ui.confirm(`删除 ${isProfileDelete ? "模板" : "余额配置"}`, deleteId)) {
 				try {
 					await removeEntry(agentDir, deleteSection, deleteId);
@@ -274,10 +290,13 @@ async function editStoredEntry(
 	isProfile: boolean,
 ): Promise<void> {
 	const draft: JsonObject = structuredClone(existing ?? {});
-	const profileNames = Object.keys(readSectionEntries(agentDir, "profiles")).sort();
-	const outcome = await editBalanceEntry(ctx, `${isProfile ? "模板" : "余额配置"}: ${id}`, draft, { showProfile: !isProfile, profileNames });
+	// 模板选择器：文件里的模板 + 内置模板（同名自定义优先，仅未覆盖的内置模板标注（内置））。
+	const fileProfileNames = Object.keys(readSectionEntries(agentDir, "profiles")).sort();
+	const profileNames = [...new Set([...fileProfileNames, ...Object.keys(BUILTIN_PROFILES)])].sort();
+	const builtinOnlyProfileNames = Object.keys(BUILTIN_PROFILES).filter((name) => !fileProfileNames.includes(name));
+	const outcome = await editBalanceEntry(ctx, `${isProfile ? "模板" : "余额配置"}: ${id}`, draft, { showProfile: !isProfile, profileNames, builtinOnlyProfileNames });
 	if (outcome.action === "cancel") return;
-	if (!isProfile && typeof draft.profile === "string" && draft.profile && !profileExists(agentDir, draft.profile)) {
+	if (!isProfile && typeof draft.profile === "string" && draft.profile && !profileExists(agentDir, draft.profile) && !isBuiltinProfile(draft.profile)) {
 		await ctx.ui.notify(`模板 ${draft.profile} 不存在，已取消保存；可先在 [模板] 中新建`, "warning");
 		return;
 	}
@@ -286,4 +305,28 @@ async function editStoredEntry(
 	} catch (error) {
 		await ctx.ui.notify(`写入失败：${error instanceof Error ? error.message : String(error)}`, "error");
 	}
+}
+
+/**
+ * 新建 provider 余额配置：仅从已知 provider ID 列表选择（models.json ∪ pi 内置目录），
+ * 不提供自由输入；providers 键必须与 provider ID 大小写完全一致才生效，列表选择从源头避免拼写不一致。
+ * 有同名内置模板（如 openrouter）时自动预绑定。
+ */
+async function createProviderEntry(
+	ctx: ExtensionCommandContext,
+	agentDir: string,
+	knownIds: ReadonlySet<string>,
+	providers: Record<string, JsonObject>,
+): Promise<void> {
+	const candidates = [...knownIds].filter((id) => !(id in providers)).sort();
+	if (candidates.length === 0) {
+		await ctx.ui.notify("models.json 与 pi 内置目录中的 provider 都已有余额配置", "info");
+		return;
+	}
+	const choice = await showOptionPicker(ctx, "新建 Provider 余额配置（键需与 provider ID 大小写完全一致）", candidates.map((id) => ({ id, label: id })), candidates[0]!);
+	if (!choice) return;
+	const id = choice.id;
+	// 内置模板同名时预绑定，保存后即开箱可用；仍可在表单里改绑其它模板。
+	const draft: JsonObject = isBuiltinProfile(id) ? { profile: id } : {};
+	await editStoredEntry(ctx, agentDir, "providers", id, structuredClone(draft), false);
 }

@@ -2,6 +2,8 @@
 
 官方 Pi 普通扩展：在状态栏显示当前 provider 的余额与生成速度（TPS），是 `balance-config.yaml` 的唯一所有者。负责余额查询运行时、缓存与定时刷新、TPS 统计，以及 provider 身份对账。
 
+支持 pi 内置 provider（如 `openrouter`，不出现在 models.json 里）：内置 provider 同样出现在 `/balance config` 面板中，按 `P` 从已知 provider 列表（models.json ∪ pi 内置目录）选择创建余额配置；providers 键必须与 provider ID **大小写完全一致**才生效，列表选择从源头避免拼写不一致。扩展内置了 OpenRouter 余额查询模板（`profile: openrouter`），配置后开箱即用；在 yaml 的 `profiles` 段自定义同名模板可覆盖内置模板。
+
 启动时会检测 pi 配置目录（`~/.pi/agent`），缺少 `balance-config.yaml` 时自动初始化一份基础配置（`refreshIntervalMinutes: 5` + 空 `profiles`/`providers`）；已存在则不做任何改动。
 
 ## 相关文件
@@ -11,7 +13,7 @@
 | `~/.pi/agent/balance-config.yaml` | 唯一的用户配置：刷新间隔、profiles 模板、providers 覆盖 |
 | `~/.pi/agent/balance-config.lock` | 写入互斥锁（容忍 30s 内的 stale lock），跨进程保护读-改-写 |
 | `~/.pi/agent/provider-balance-map.json` | Provider 重命名时的 alias 记录（对账产物，无 secret） |
-| `~/.pi/agent/models.json` | 只读引用：Provider 列表来自这里，余额配置通过 Provider ID 关联 |
+| `~/.pi/agent/models.json` | 只读引用：Provider 列表来自这里（pi 内置 provider 不在此文件，单独从内置 catalog 读取），余额配置通过 Provider ID 关联 |
 
 ## 命令
 
@@ -21,7 +23,7 @@
 |---|---|
 | `/balance`（或 `/balance status`） | 执行一次 Provider 身份对账、刷新并显示当前余额/TPS |
 | `/balance update` | 强制刷新当前 provider 的余额（忽略缓存间隔） |
-| `/balance config` | 打开 TUI 编辑面板（需要交互式 UI） |
+| `/balance config` | 打开 TUI 编辑面板（需要交互式 UI）；按 `P` 从已知 provider 列表新建 providers 配置 |
 | `/balance reconcile` | 只执行对账并显示报告，不刷新余额 |
 | `/balance reconcile --prune` | 对 orphan provider 执行隔离前确认（需要交互式 UI），确认后条目从 `providers` 移入 `orphanProviders`（可恢复，不做物理删除） |
 
@@ -93,8 +95,8 @@ providers:
 
 列表 + 单键快捷操作：**Enter** 编辑选中条目 / **n** 新建模板 / **d** 删除 / **y** 原始 YAML / **q** 退出。
 
-- `providers`：为 models.json 中的每个 provider 绑定 profile 或覆盖 request/extractor/credentials/validity；凭据掩码显示，留空保持原值，输入 `-` 清除；
-- `profiles`：模板的增删改（`n` 新建），与 provider 条目共用同一个表单；
+- `providers`：为 models.json 中的每个 provider 绑定 profile 或覆盖 request/extractor/credentials/validity；按 `P` 可从已知 provider 列表（models.json ∪ pi 内置目录）新建条目，键与 provider ID 大小写完全一致；凭据掩码显示，留空保持原值，输入 `-` 清除；
+- `profiles`：模板的增删改（`n` 新建），与 provider 条目共用同一个表单；内置模板（目前 `openrouter`）无需在 yaml 中定义即可绑定，同名自定义优先；
 - `orphanProviders`：隔离条目的恢复（节点移动，保留原注释）与彻底删除；
 - `refreshIntervalMinutes`：刷新间隔（留空恢复默认 5）；
 - 表单覆盖全部已知字段：`request.url/baseUrl/method/headers/body/timeoutSeconds`、`extractor.remainingPath/totalPath/usedPath/unit/unitPath/scale/errorPath/errorFallback`、`validity.path/allTruthy/firstDefined/fallback`；未列出的字段走"原始 JSON"兜底。
@@ -117,6 +119,7 @@ providers:
 - 新增 Provider：只报告，不自动创建余额配置；
 - 已有 Provider：原样保留；
 - 删除 Provider：默认保留为 orphan 并报告；`--prune` 且用户确认后才隔离进 `orphanProviders`；
+- pi 内置 provider（如 openrouter）不在 models.json 里，配置了也不算 orphan；
 - Provider 重命名：消费 `pi-model-manager` 在 `pi.events` 上广播的 `pi-model-manager:models-changed` 事件（`provider-rename`，无 secret），在配置锁内原子迁移 balance key，并把 alias 记入 `provider-balance-map.json`；
 - 冲突（如 newId 已有余额配置）：停止自动写入，报告冲突，不覆盖任一配置。
 

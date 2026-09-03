@@ -37,6 +37,13 @@ export function readModelsProviderIds(path: string): Set<string> {
 	return new Set(Object.keys(models.providers ?? {}));
 }
 
+/** 已知 provider ID：models.json providers ∪ pi 内置 provider（大小写敏感，键必须完全一致才生效）。 */
+export function readKnownProviderIds(path: string, builtinIds: ReadonlySet<string>): Set<string> {
+	const ids = new Set(builtinIds);
+	if (existsSync(path)) for (const id of readModelsProviderIds(path)) ids.add(id);
+	return ids;
+}
+
 export function readBalanceMap(agentDir: string): BalanceMapDocument {
 	const path = join(agentDir, BALANCE_MAP_NAME);
 	if (!existsSync(path)) return { version: MAP_VERSION, aliases: {} };
@@ -60,6 +67,8 @@ function providerRecord(value: unknown): JsonObject | undefined {
 export interface ReconcileOptions {
 	/** manager 广播的变更事件。 */
 	events?: readonly ReconcileEvent[];
+	/** pi 内置 provider ID（如 openrouter，不在 models.json 里）；这些 ID 不算 orphan。 */
+	builtinIds?: ReadonlySet<string>;
 	/** `--prune` 前的用户确认回调；未提供或返回 false 时 orphan 保持原样。 */
 	confirmPrune?: (orphanIds: string[]) => Promise<boolean> | boolean;
 }
@@ -69,11 +78,14 @@ export interface ReconcileOptions {
  * - 新增 Provider：只报告，不自动创建余额配置；
  * - 已有 Provider：原样保留；
  * - 删除 Provider：默认保留为 orphan，`confirmPrune` 明确确认后隔离进 `orphanProviders`（可恢复）；
+ * - pi 内置 provider（builtinIds）不在 models.json 里，配置了也不算 orphan；
  * - 显式 rename 事件：迁移 balance key 并记录 alias；存在冲突时停止自动写入，报告冲突。
  */
 export async function reconcileProviders(agentDir: string, path: string, options: ReconcileOptions = {}): Promise<ReconcileReport> {
 	return withConfigLock(agentDir, async () => {
 		const modelIds = readModelsProviderIds(path);
+		const builtinIds = options.builtinIds ?? new Set<string>();
+		const isOrphan = (id: string): boolean => !modelIds.has(id) && !builtinIds.has(id);
 		const before = configFingerprint(agentDir);
 		const current = readConfig(agentDir);
 		const providers: Record<string, JsonObject> = {};
@@ -95,7 +107,7 @@ export async function reconcileProviders(agentDir: string, path: string, options
 			return {
 				added: [...modelIds].filter((id) => !ids.has(id)),
 				existing: [...modelIds].filter((id) => ids.has(id)),
-				orphan: [...ids].filter((id) => !modelIds.has(id)),
+				orphan: [...ids].filter(isOrphan),
 				renamed: [],
 				conflicts,
 				quarantined: [],
@@ -120,7 +132,7 @@ export async function reconcileProviders(agentDir: string, path: string, options
 		}
 
 		const idsAfterRename = balanceIds();
-		const orphan = [...idsAfterRename].filter((id) => !modelIds.has(id));
+		const orphan = [...idsAfterRename].filter(isOrphan);
 
 		// prune：用户明确确认后才把 orphan 隔离进 orphanProviders（可恢复，不做物理删除）。
 		const quarantined: string[] = [];
@@ -145,7 +157,7 @@ export async function reconcileProviders(agentDir: string, path: string, options
 		return {
 			added: [...modelIds].filter((id) => !finalIds.has(id)),
 			existing: [...modelIds].filter((id) => finalIds.has(id)),
-			orphan: [...finalIds].filter((id) => !modelIds.has(id)),
+			orphan: [...finalIds].filter(isOrphan),
 			renamed,
 			conflicts,
 			quarantined,

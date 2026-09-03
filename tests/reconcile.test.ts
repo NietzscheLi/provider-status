@@ -98,3 +98,14 @@ test("provider-delete 事件不删除 balance 配置，等待人工确认", asyn
 	const config = readConfig(dir);
 	assert.ok((config.providers as Record<string, unknown>).old);
 });
+
+test("pi 内置 provider（如 openrouter）配置后不算 orphan", async () => {
+	const dir = makeDir();
+	const models = seed(dir, "providers:\n  openrouter: {}\n", []);
+	const withBuiltin = await reconcileProviders(dir, models, { builtinIds: new Set(["openrouter"]) });
+	assert.deepEqual(withBuiltin.orphan, []);
+	assert.deepEqual(withBuiltin.added, []);
+	// 不带 builtinIds 时保持旧行为：配置了但不在 models.json 里视为 orphan。
+	const withoutBuiltin = await reconcileProviders(dir, models);
+	assert.deepEqual(withoutBuiltin.orphan, ["openrouter"]);
+});

@@ -1,4 +1,5 @@
 import { objectAt, readConfig, valueAt } from "./config.ts";
+import { BUILTIN_PROFILES } from "./builtin.ts";
 import { extractBalance, interpolateObject } from "./balance-extractor.ts";
 import type { BalanceSource, FetchLike, JsonObject } from "./types.ts";
 
@@ -11,6 +12,8 @@ export async function requestBalance(agentDir: string, providerId: string, sourc
   let profile: JsonObject | undefined;
   if (typeof rawProfile === "string") {
     profile = objectAt(config.profiles?.[rawProfile], "");
+    // 配置文件里没有同名模板时回退到内置模板（如 openrouter）；用户同名自定义优先。
+    profile ??= BUILTIN_PROFILES[rawProfile];
     if (!profile) throw new Error(`Unknown balance profile: ${rawProfile}`);
   } else if (rawProfile && typeof rawProfile === "object" && !Array.isArray(rawProfile)) {
     profile = rawProfile as JsonObject;

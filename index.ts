@@ -4,6 +4,7 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { BalanceService, formatBalance } from "./balance-service.ts";
 import { readConfig } from "./config.ts";
 import { ensureBaseConfigFile } from "./config-edit.ts";
+import { getBuiltinProviderIds } from "./builtin.ts";
 import { redactSecrets } from "./config-store.ts";
 import {
 	modelsPath,
@@ -55,7 +56,9 @@ export default function providerStatusExtension(pi: ExtensionAPI): void {
 
 	const runReconcile = (events?: readonly ReconcileEvent[], confirmPrune?: (orphanIds: string[]) => Promise<boolean>) => {
 		if (inFlight) return inFlight;
-		inFlight = reconcileProviders(agentDir, path, { events, confirmPrune })
+		inFlight = getBuiltinProviderIds()
+			.catch(() => new Set<string>() as ReadonlySet<string>)
+			.then((builtinIds) => reconcileProviders(agentDir, path, { events, confirmPrune, builtinIds }))
 			.then((report) => {
 				const ctx = sessionCtx;
 				if (ctx && (report.conflicts.length > 0 || report.renamed.length > 0 || report.added.length > 0 || report.orphan.length > 0)) {

@@ -9,6 +9,7 @@
     "package-lock.json",
     "index.ts",
     "config.ts",
+    "builtin.ts",
     "config-edit.ts",
     "config-store.ts",
     "balance-draft.ts",

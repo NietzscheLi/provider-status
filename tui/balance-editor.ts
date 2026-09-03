@@ -208,7 +208,7 @@ export async function editBalanceEntry(
 	ctx: ExtensionCommandContext,
 	title: string,
 	draft: JsonObject,
-	options: { showProfile: boolean; profileNames: readonly string[]; base?: JsonObject },
+	options: { showProfile: boolean; profileNames: readonly string[]; builtinOnlyProfileNames?: readonly string[]; base?: JsonObject },
 ): Promise<EntryEditOutcome> {
 	const base = options.base;
 	const cursor: MenuCursor = { index: 0 };
@@ -234,7 +234,10 @@ export async function editBalanceEntry(
 		if (id === "profile") {
 			const choices = [
 				{ id: "", label: "<不使用模板>" },
-				...options.profileNames.map((name) => ({ id: name, label: name })),
+				...options.profileNames.map((name) => ({
+					id: name,
+					label: options.builtinOnlyProfileNames?.includes(name) ? `${name}（内置）` : name,
+				})),
 			];
 			const choice = await showOptionPicker(ctx, "绑定余额模板", choices, typeof draft.profile === "string" ? draft.profile : "");
 			if (choice) setValueAtPath(draft, "profile", choice.id);

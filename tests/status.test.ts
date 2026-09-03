@@ -92,3 +92,36 @@ test("supports profile aliases/inline objects and relative request URLs", async 
   assert.equal(await requestBalance(dir, "inline", { apiKey: "sk" }, fetcher), "USD 7");
   assert.deepEqual(urls, ["https://alias.example/v1/usage", "https://inline.example/v1/usage"]);
 });
+
+test("providers 里未定义的同名模板回退到内置模板（openrouter）", async () => {
+  const dir = mkdtempSync(join("/tmp", "pi-provider-status-"));
+  writeFileSync(join(dir, "balance-config.yaml"), "profiles: {}\nproviders:\n  openrouter:\n    profile: openrouter\n");
+  let url = "";
+  let auth: string | undefined;
+  const fetcher = async (input: string | URL, init?: { headers?: Record<string, string> }) => {
+    url = String(input);
+    auth = init?.headers?.Authorization;
+    return new Response(JSON.stringify({ data: { total_credits: "10", total_usage: "4" } }), { status: 200 });
+  };
+  assert.equal(await requestBalance(dir, "openrouter", { baseUrl: "https://openrouter.ai/api/v1", apiKey: "sk-or" }, fetcher), "$6");
+  assert.equal(url, "https://openrouter.ai/api/v1/credits");
+  assert.equal(auth, "Bearer sk-or");
+});
+
+test("用户自定义的同名模板优先于内置模板", async () => {
+  const dir = mkdtempSync(join("/tmp", "pi-provider-status-"));
+  writeFileSync(join(dir, "balance-config.yaml"), [
+    "profiles:",
+    "  openrouter:",
+    "    request:",
+    "      url: https://custom.example/credits",
+    "    extractor:",
+    "      remainingPath: left",
+    "      unit: C",
+    "providers:",
+    "  openrouter:",
+    "    profile: openrouter",
+  ].join("\n"));
+  const fetcher = async () => new Response(JSON.stringify({ left: 9 }), { status: 200 });
+  assert.equal(await requestBalance(dir, "openrouter", { baseUrl: "https://openrouter.ai/api/v1" }, fetcher), "C9");
+});
