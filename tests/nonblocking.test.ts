@@ -130,9 +130,14 @@ test("session_start background refresh does not throw unhandled rejections", asy
       events: { on: () => undefined },
     } as never);
     // session_start 里的后台刷新遇到挂起的 fetch 也必须安静地等待，不能抛未处理拒绝。
-    for (const handler of eventHandlers) handler({ timestamp: 0 }, harness.ctx);
+    // 按真实生命周期顺序触发：先会话事件，最后 shutdown（会中止在途请求并清理状态栏）。
+    const [shutdown] = eventHandlers.slice(-1);
+    for (const handler of eventHandlers.slice(0, -1)) handler({ timestamp: 0 }, harness.ctx);
     await settle();
     assert.match(harness.statuses.get("balance")!, /refreshing/);
+    for (const handler of eventHandlers) if (handler === shutdown) handler({ timestamp: 0 }, harness.ctx);
+    await settle();
+    assert.equal(harness.statuses.get("balance"), undefined);
   } finally {
     harness.restore();
   }

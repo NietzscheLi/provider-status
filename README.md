@@ -123,6 +123,17 @@ providers:
 - Provider 重命名：消费 `pi-model-manager` 在 `pi.events` 上广播的 `pi-model-manager:models-changed` 事件（`provider-rename`，无 secret），在配置锁内原子迁移 balance key，并把 alias 记入 `provider-balance-map.json`；
 - 冲突（如 newId 已有余额配置）：停止自动写入，报告冲突，不覆盖任一配置。
 
+## 查询运行时（参照 pi-usage）
+
+余额查询的事件驱动/调度机制对齐 [pi-usage](https://github.com/narumiruna/pi-extensions/tree/main/packages/pi-usage) 的设计：
+
+- **不阻塞 pi**：所有网络请求都在后台异步完成，命令 handler 与事件回调绝不 `await` 网络请求，否则 pi 会把整个 agent 视为 busy；
+- **缓存优先快速上屏**：缓存新鲜时（`refreshIntervalMinutes` 内）直接用缓存渲染状态栏，不解析认证、不发请求；未命中才进入认证解析 + 请求流程；
+- **定时调度**：`unref` 的递归 `setTimeout` 按 `refreshIntervalMinutes` 调度后台刷新，不阻止进程退出；
+- **失败退避**：请求失败后 30s 内事件触发的刷新不再击打端点（`/balance update` 强制刷新不受限），避免端点持续故障时被事件风暴反复击打；失败结果也不会被缓存为新鲜值，退避期一过即自动重试；
+- **在途请求中止**：切换 provider / session 结束时，通过 generation + AbortController 立即中止上一个在途请求（TUN 黑洞等场景不再挂满超时时长），只有最新的在途查询能写状态栏；
+- **有界响应读取**：余额响应体上限 64KB，超限视为异常；`timeoutSeconds` 与外部中止共同生效。
+
 ## 安全
 
 扩展源码不保存密钥。余额请求优先使用 models.json/provider auth 的凭据，仅当 balance 配置明确提供专用 `credentials` 时使用专用引用。所有通知/错误输出先经过 `redactSecrets` 脱敏；对账事件和映射文件不包含 secret。
