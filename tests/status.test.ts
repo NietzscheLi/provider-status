@@ -48,6 +48,50 @@ test("deduplicates concurrent refreshes and preserves stale value", async () => 
   assert.equal(calls, 1); assert.equal(a.text, "7"); assert.equal(b.text, "7");
 });
 
+test("failed requests are not cached as fresh; next refresh retries immediately", async () => {
+  const dir = mkdtempSync(join("/tmp", "pi-provider-status-"));
+  writeFileSync(join(dir, "balance-config.yaml"), "profiles: {}\nproviders:\n  demo:\n    request:\n      url: https://example.invalid/balance\n    extractor:\n      remainingPath: remaining\n");
+  let calls = 0;
+  const fetcher = async () => { calls++; if (calls === 1) return new Response("boom", { status: 500 }); return new Response(JSON.stringify({ remaining: 7 }), { status: 200 }); };
+  const service = new BalanceService(dir, fetcher, () => 1000);
+  const failed = await service.refresh("demo", {});
+  assert.ok(failed.error);
+  assert.equal(failed.updatedAt, undefined);
+  // 时间不前进也立即重试：失败不能把错误状态缓存一个刷新周期。
+  const retried = await service.refresh("demo", {});
+  assert.equal(calls, 2);
+  assert.equal(retried.error, undefined);
+  assert.equal(retried.text, "7");
+});
+
+test("failure keeps the last success timestamp; stale success retries, fresh success does not", async () => {
+  const dir = mkdtempSync(join("/tmp", "pi-provider-status-"));
+  writeFileSync(join(dir, "balance-config.yaml"), "profiles: {}\nproviders:\n  demo:\n    request:\n      url: https://example.invalid/balance\n    extractor:\n      remainingPath: remaining\n");
+  let calls = 0;
+  let clock = 1000;
+  const fetcher = async () => { calls++; if (calls === 1) return new Response(JSON.stringify({ remaining: 7 }), { status: 200 }); return new Response("boom", { status: 500 }); };
+  const service = new BalanceService(dir, fetcher, () => clock);
+  const ok = await service.refresh("demo", {});
+  assert.equal(ok.text, "7");
+  // 新鲜成功期内不发请求，也不会产生错误状态。
+  clock += 60_000;
+  const fresh = await service.refresh("demo", {});
+  assert.equal(calls, 1);
+  assert.equal(fresh.error, undefined);
+  assert.equal(fresh.text, "7");
+  // 成功时间超出刷新间隔后请求失败：保留旧 updatedAt，不把失败记为新鲜。
+  clock += 240_001;
+  const stale = await service.refresh("demo", {});
+  assert.equal(calls, 2);
+  assert.ok(stale.error);
+  assert.equal(stale.updatedAt, 1000);
+  // 失败后的下一次刷新立即重试，不再被节流整整一个周期。
+  const retried = await service.refresh("demo", {});
+  assert.equal(calls, 3);
+  assert.ok(retried.error);
+  assert.equal(retried.updatedAt, 1000);
+});
+
 test("reports new and orphan provider IDs without mutating config", async () => {
   const dir = mkdtempSync(join("/tmp", "pi-provider-status-"));
   writeFileSync(join(dir, "balance-config.yaml"), "providers:\n  old: {}\n  keep: {}\n");

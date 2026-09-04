@@ -82,7 +82,7 @@ export default function providerStatusExtension(pi: ExtensionAPI): void {
 		ctx.ui.setStatus("tps", tps === undefined ? "TPS --" : `TPS ${tps.toFixed(1)}`);
 	};
 
-	const refresh = async (ctx: ExtensionContext, force = false) => {
+	const refresh = async (ctx: ExtensionContext, force = false): Promise<void> => {
 		const model = ctx.model;
 		if (!model) return;
 		current = model.provider;
@@ -90,8 +90,22 @@ export default function providerStatusExtension(pi: ExtensionAPI): void {
 		// 而不是 getProviderAuth：后者只查 auth.json 且大小写敏感，
 		// pi 把小写 provider id 解析到 models.json 里大小写不同的 ID 时会拿不到 key。
 		const resolved = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-		await service.refresh(model.provider, { baseUrl: model.baseUrl, apiKey: resolved.ok ? resolved.apiKey : undefined }, force);
+		const pending = service.refresh(model.provider, { baseUrl: model.baseUrl, apiKey: resolved.ok ? resolved.apiKey : undefined }, force);
+		// 请求进行中就把 refreshing 状态画到状态栏；handler 立即返回，不阻塞 pi。
 		update(ctx);
+		await pending;
+		update(ctx);
+	};
+
+	/** 后台刷新：绝不在命令 handler 里 await 网络请求，否则 pi 会把整个 agent 视为 busy。 */
+	const refreshInBackground = (ctx: ExtensionContext, force: boolean, report: boolean) => {
+		void refresh(ctx, force)
+			.then(() => {
+				if (report) showStatus(ctx);
+			})
+			.catch((error: unknown) => {
+				notifySafe(ctx, `Balance refresh failed: ${error instanceof Error ? error.message : String(error)}`, "warning");
+			});
 	};
 
 	const showStatus = (ctx: ExtensionContext) => {
@@ -115,8 +129,8 @@ export default function providerStatusExtension(pi: ExtensionAPI): void {
 				return;
 			}
 			if (trimmed === "update") {
-				await refresh(ctx, true);
 				showStatus(ctx);
+				refreshInBackground(ctx, true, true);
 				return;
 			}
 			if (trimmed.startsWith("reconcile")) {
@@ -132,8 +146,8 @@ export default function providerStatusExtension(pi: ExtensionAPI): void {
 				return;
 			}
 			if (trimmed === "" || trimmed === "status") {
-				await runReconcile();
-				await refresh(ctx);
+				void runReconcile();
+				refreshInBackground(ctx, false, false);
 				showStatus(ctx);
 				return;
 			}
@@ -154,7 +168,7 @@ export default function providerStatusExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.on("model_select", (_event, ctx) => {
-		void refresh(ctx);
+		refreshInBackground(ctx, false, false);
 	});
 
 	pi.events.on(MODELS_CHANGED_EVENT, (payload) => {
@@ -165,7 +179,7 @@ export default function providerStatusExtension(pi: ExtensionAPI): void {
 	pi.on("session_start", (_event, ctx) => {
 		sessionCtx = ctx;
 		update(ctx);
-		void refresh(ctx);
+		refreshInBackground(ctx, false, false);
 		void runReconcile();
 	});
 

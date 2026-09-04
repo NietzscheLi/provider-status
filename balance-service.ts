@@ -20,7 +20,10 @@ export class BalanceService {
     const current = this.get(id); const age = refreshInterval(readConfig(this.agentDir)) * 60000;
     if (!force && current.updatedAt !== undefined && this.now() - current.updatedAt < age) return current;
     this.states.set(id, { ...current, loading: true });
-    const promise = requestBalance(this.agentDir, id, source, this.fetcher).then((text) => ({ text, loading: false, updatedAt: this.now() }), (error) => ({ text: current.text, loading: false, error: error instanceof Error ? error.message : "Balance query failed", updatedAt: this.now() }));
+    // 失败结果保留原来的 updatedAt（可能是 undefined）：若把失败时间记为 updatedAt，
+    // 一次网络抖动/超时就会被当作新鲜结果缓存整个刷新周期，期间普通刷新全部被节流，
+    // 用户必须反复强制刷新才能恢复；保留旧值让下一次 refresh 立即重试。
+    const promise = requestBalance(this.agentDir, id, source, this.fetcher).then((text) => ({ text, loading: false, updatedAt: this.now() }), (error) => ({ text: current.text, loading: false, error: error instanceof Error ? error.message : "Balance query failed", updatedAt: current.updatedAt }));
     this.pending.set(id, promise);
     const result = await promise; this.pending.delete(id); this.states.set(id, result); return result;
   }
