@@ -7,7 +7,7 @@ import providerStatusExtension from "../index.ts";
 
 const CONFIG = [
   "profiles: {}",
-  "providers:",
+  "balances:",
   "  alpha:",
   "    request:",
   "      url: https://example.invalid/balance",
@@ -22,7 +22,7 @@ const CONFIG = [
 
 function setup() {
   const dir = mkdtempSync(join("/tmp", "pi-provider-status-bk-"));
-  writeFileSync(join(dir, "balance-config.yaml"), CONFIG);
+  writeFileSync(join(dir, "usage-config.yaml"), CONFIG);
   process.env.PI_CODING_AGENT_DIR = dir;
 
   let failFetch = false;
@@ -123,7 +123,7 @@ test("失败退避：事件触发的刷新在退避期内不再击打端点，�
     assert.equal(harness.getFetchCount(), 1);
 
     // /balance update（force）绕过退避。
-    await harness.commands.get("balance")!.handler("update", ctx);
+    await harness.commands.get("usage")!.handler("update", ctx);
     await harness.settle();
     assert.equal(harness.getFetchCount(), 2);
   } finally {

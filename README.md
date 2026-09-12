@@ -1,145 +1,183 @@
 # pi-provider-status
 
-官方 Pi 普通扩展：在状态栏显示当前 provider 的余额与生成速度（TPS），是 `balance-config.yaml` 的唯一所有者。负责余额查询运行时、缓存与定时刷新、TPS 统计，以及 provider 身份对账。
+官方 Pi 普通扩展：在状态栏显示当前 provider 的**订阅额度窗口**与**账户余额**，以及生成速度（TPS），是 `usage-config.yaml` 的唯一所有者。负责用量查询运行时、缓存与定时刷新、TPS 统计，以及 provider 身份对账。
 
-支持 pi 内置 provider（如 `openrouter`，不出现在 models.json 里）：内置 provider 同样出现在 `/balance config` 面板中，按 `P` 从已知 provider 列表（models.json ∪ pi 内置目录）选择创建余额配置；providers 键必须与 provider ID **大小写完全一致**才生效，列表选择从源头避免拼写不一致。扩展内置了 OpenRouter 余额查询模板（`profile: openrouter`），配置后开箱即用；在 yaml 的 `profiles` 段自定义同名模板可覆盖内置模板。
+两类数据分开建模：
 
-启动时会检测 pi 配置目录（`~/.pi/agent`），缺少 `balance-config.yaml` 时自动初始化一份基础配置（`refreshIntervalMinutes: 5` + 空 `profiles`/`providers`）；已存在则不做任何改动。
+- **余额型（balance）**：任意 HTTP 接口 + JSON 路径提取，适合 OpenRouter、Sub2API/NewAPI 中转、DeepSeek 等；
+- **订阅型（subscription）**：内置适配器解析 5h/周/月 额度窗口，先支持 Ollama、CommandCode、OpenCode Go、GLM、ChatGPT/Codex、Kimi。
+
+状态栏按类型分键发布，便于 [pi-starship](https://pi.dev/packages/@narumitw/pi-starship) 用图标区分：余额型写 `balance`（💰），订阅型写 `quota`（📊），另有 `tps`（⚡）。同一时刻只有一个数据键有值。
 
 ## 相关文件
 
 | 文件 | 角色 |
 |---|---|
-| `~/.pi/agent/balance-config.yaml` | 唯一的用户配置：刷新间隔、profiles 模板、providers 覆盖 |
-| `~/.pi/agent/balance-config.lock` | 写入互斥锁（容忍 30s 内的 stale lock），跨进程保护读-改-写 |
-| `~/.pi/agent/provider-balance-map.json` | Provider 重命名时的 alias 记录（对账产物，无 secret） |
-| `~/.pi/agent/models.json` | 只读引用：Provider 列表来自这里（pi 内置 provider 不在此文件，单独从内置 catalog 读取），余额配置通过 Provider ID 关联 |
+| `~/.pi/agent/usage-config.yaml` | 唯一的用户配置：刷新间隔、`profiles` 模板、`balances`、`subscriptions` |
+| `~/.pi/agent/usage-config.lock` | 写入互斥锁（容忍 30s 内的 stale lock），跨进程保护读-改-写 |
+| `~/.pi/agent/provider-usage-map.json` | Provider 重命名时的 alias 记录（对账产物，无 secret） |
+| `~/.pi/agent/balance-config.yaml` | **旧文件**：首次启动自动迁移为 `usage-config.yaml`，旧文件保留不删 |
+| `~/.pi/agent/models.json` | 只读引用：Provider 列表来自这里（pi 内置 provider 单独从内置 catalog 读取） |
 
 ## 命令
 
-所有功能收敛在 `/balance` 一个命令下：
+所有功能收敛在 `/usage` 一个命令下：
 
 | 命令 | 行为 |
 |---|---|
-| `/balance`（或 `/balance status`） | 执行一次 Provider 身份对账、刷新并显示当前余额/TPS |
-| `/balance update` | 强制刷新当前 provider 的余额（忽略缓存间隔） |
-| `/balance config` | 打开 TUI 编辑面板（需要交互式 UI）；按 `P` 从已知 provider 列表新建 providers 配置 |
-| `/balance reconcile` | 只执行对账并显示报告，不刷新余额 |
-| `/balance reconcile --prune` | 对 orphan provider 执行隔离前确认（需要交互式 UI），确认后条目从 `providers` 移入 `orphanProviders`（可恢复，不做物理删除） |
+| `/usage`（或 `/usage status`） | 执行一次 Provider 身份对账、刷新并显示当前用量/TPS |
+| `/usage update` | 强制刷新当前 provider（忽略缓存间隔） |
+| `/usage config` | 打开 TUI 编辑面板（需要交互式 UI） |
+| `/usage reconcile` | 只执行对账并显示报告，不刷新 |
+| `/usage reconcile --prune` | 对 orphan 余额条目执行隔离前确认，确认后从 `balances` 移入 `orphanBalances`（可恢复） |
 
-未知子命令会提示用法。状态栏常驻显示 `balance` 与 `tps` 两个条目。
-
-## 配置参考（balance-config.yaml）
+## 配置参考（usage-config.yaml）
 
 ```yaml
-# 余额自动刷新间隔（分钟）。扩展用递归 setTimeout 按计划时间精确调度；默认 5。
 refreshIntervalMinutes: 5
 
-# 公共协议模板。provider 通过 profile 引用继承，再用自身同名字段覆盖。
+# 余额模板：公共请求/提取协议，provider 通过 profile 引用继承。
 profiles:
   newapi: &newapi
     request: { ... }
     extractor: { ... }
 
-providers:
-  MyProvider:
-    profile: newapi          # 字符串引用 / YAML 别名(*newapi) / 内联对象，三者等价
+# 余额型 provider（旧段名 providers）。
+balances:
+  MyRelay:
+    profile: newapi
     request:   { baseUrl: https://example.com }
     extractor: { unit: $, scale: 0.5 }
     credentials: { apiKey: sk-... }
+  openrouter:
+    profile: openrouter        # 内置模板，开箱即用
+
+# 订阅型 provider：键必须与 provider ID 大小写完全一致。
+subscriptions:
+  ollama-cloud:
+    adapter: ollama
+  commandcode:
+    adapter: commandcode
+  opencode-go:
+    adapter: opencode-go
+  zai:              # GLM Coding Plan 全球区，默认 https://api.z.ai
+    adapter: glm
+  zai-coding-cn:    # GLM 编程套餐中国区，默认 https://open.bigmodel.cn
+    adapter: glm
+  openai-codex:
+    adapter: chatgpt
+  kimi-coding:
+    adapter: kimi
+
+# 隔离的孤儿余额条目（旧段名 orphanProviders）。
+orphanBalances: {}
 ```
 
-### 继承与合并语义
+### 余额继承与合并语义
 
-- provider 自身字段与 profile 做**浅合并**：`request`、`extractor`、`credentials` 三段各自独立合并，provider 同名字段整体覆盖 profile（例如 provider 的 `headers` 会完全替换 profile 的 `headers`，而不是逐键合并）；
-- 凭据不继承到表单显示，但运行时 provider `credentials` 优先于 models.json 的 provider auth；
+- provider 自身字段与 profile 做**浅合并**：`request`、`extractor`、`credentials` 三段各自独立合并，provider 同名字段整体覆盖 profile；
+- 运行时 provider `credentials` 优先于 models.json 的 provider auth；
 - 编辑面板会把合并后的有效值预填写出来，继承字段带（继承）标记；留空清除覆盖、恢复继承。
 
-### request 字段
+### 余额 request 字段
 
 | 字段 | 说明 |
 |---|---|
 | `url` | 请求地址。可用插值变量；相对路径（如 `/api/v1/credits`）以 `baseUrl` 为根解析 |
-| `baseUrl` | 可选。覆盖 provider 在 models.json 里的 baseUrl（会去掉末尾 `/v1`）；插值变量 `{{baseUrl}}` 的取值 |
+| `baseUrl` | 可选。覆盖 provider 在 models.json 里的 baseUrl（会去掉末尾 `/v1`） |
 | `method` | 默认 `GET` |
 | `headers` | 请求头对象，值可插值 |
 | `body` | 请求体对象（会 JSON 序列化），值可插值 |
 | `timeoutSeconds` | 单次请求超时，默认 10 |
 
-插值变量：`{{baseUrl}}`、`{{apiKey}}`、`{{accessToken}}`、`{{userId}}`（取自 credentials，缺失时回退 provider auth）。
+插值变量：`{{baseUrl}}`、`{{apiKey}}`、`{{accessToken}}`、`{{userId}}`。
 
-### extractor 字段
+### 余额 extractor 字段
 
 | 字段 | 说明 |
 |---|---|
-| `remainingPath` | 响应里剩余额度的字段路径（`data.quota` 形式，数组用 `items.0.remaining`）；null/未设置时由 `totalPath - usedPath` 计算 |
-| `usedPath` / `totalPath` | 已用/总额路径，配合计算 remaining |
-| `unit` | 显示单位字符串（如 `$`、`￥`）；未设置时从 `unitPath` 指向的响应字段读取 |
-| `unitPath` | 从响应读取单位的路径 |
-| `scale` | 余量缩放系数，直接相乘（如接口单位是分则设 `0.01`；默认 1） |
-| `errorPath` | 查询无效时优先从响应该字段读取错误信息 |
-| `errorFallback` | 错误信息兜底文案，默认 `Balance query failed` |
+| `remainingPath` | 剩余额度字段路径（`data.quota`，数组用 `items.0.remaining`）；未设置时由 `totalPath - usedPath` 计算 |
+| `usedPath` / `totalPath` | 已用/总额路径 |
+| `unit` / `unitPath` | 显示单位（如 `$`、`￥`）或从响应读取单位的路径 |
+| `scale` | 余量缩放系数（默认 1） |
+| `errorPath` / `errorFallback` | 查询无效时的错误信息来源与兜底文案 |
 
 ### validity（响应有效性判定）
 
 | 字段 | 说明 |
 |---|---|
-| `path` | 该路径取值为真才继续（如 `data`） |
-| `allTruthy` | 路径数组，全部为真才继续（如 `[success, data]`） |
-| `firstDefined` | 路径数组，按顺序取**第一个存在**的字段判断有效性（如 `[is_active, isValid]`） |
-| `fallback` | 仅当 `firstDefined` 的字段都不存在时生效：为真视为有效继续提取，为假报错 |
+| `path` | 该路径取值为真才继续 |
+| `allTruthy` | 路径数组，全部为真才继续 |
+| `firstDefined` | 按顺序取第一个存在的字段判断有效性 |
+| `fallback` | 仅当 `firstDefined` 的字段都不存在时生效 |
 
-任何判定失败都会抛错：错误信息优先取 `errorPath` 指向的响应字段，否则用 `errorFallback`。
+## 订阅适配器
 
-## TUI 编辑面板（/balance config）
+| adapter | provider ID（默认） | 端点 | 认证 | 窗口 |
+|---|---|---|---|---|
+| `ollama` | `ollama-cloud` | `GET ollama.com/api/usage` | models.json `apiKey` | `limits.session`(5h)/`limits.weekly`（0-1 小数；接口不返回 reset，按 5h/周一 UTC 网格推算） |
+| `commandcode` | `commandcode` | `GET /alpha/whoami` → `/alpha/billing/credits` + `/alpha/usage/summary` | Bearer API key | `windowLimits.fiveHour`/`weekly` + 月度 `spent/total` |
+| `opencode-go` | `opencode-go` | `GET opencode.ai/zen/go/v1/usage` | Bearer API key | `usage.rolling`(5h)/`weekly`/`monthly` + `resetsAt` |
+| `glm` | `zai`（全球）/ `zai-coding-cn`（中国） | `GET {api.z.ai\|open.bigmodel.cn}/api/monitor/usage/quota/limit` | API key（先裸 key，401 再 Bearer） | `data.limits[]` TOKENS_LIMIT：unit 3=小时/6=周 + `nextResetTime` |
+| `chatgpt` | `openai-codex` | `GET chatgpt.com/backend-api/wham/usage` | pi 运行时解析的 OAuth access token + `chatgpt-account-id`（从 JWT claim 读取） | `rate_limit.primary/secondary` |
+| `kimi` | `kimi-coding` | `GET api.kimi.com/coding/v1/usages` | Bearer（pi 解析的 kimi-coding 凭据） | 最短 rolling 窗口(300min=5h) + weekly 汇总 |
 
-列表 + 单键快捷操作：**Enter** 编辑选中条目 / **n** 新建模板 / **d** 删除 / **y** 原始 YAML / **q** 退出。
+- `ollama-cloud` 与 `commandcode` **不是 pi 内置 provider**，需先安装对应 provider 包（`pi-ollama-cloud`/`pi-ollama-cloud-provider` 注册 `ollama-cloud`；`pi-commandcode-provider`/`@bacnh85/pi-commandcode` 注册 `commandcode`）；`opencode-go`/`zai`/`zai-coding-cn`/`openai-codex`/`kimi-coding` 是 pi 内置。
+- 条目可覆盖 `label`（短标签）、`request.baseUrl`（区域端点）、`request.timeoutSeconds`（默认 15）、`request.headers`、`maxWidth`（状态栏宽度预算，默认 48）、`credentials`；余额与订阅统一使用 `request.*` / `credentials.*` 命名，TUI 表单与运行时字段一一对应（由 `tests/tui-coverage.test.ts` 守护）；
+- 凭据默认由 pi 运行时解析（与聊天请求同一套 `models.json`/OAuth），条目内 `credentials` 只用于覆盖特殊情况；
+- **不使用**浏览器 cookie、HTML 抓取、旁路凭据文件或自建 token refresh。
 
-- `providers`：为 models.json 中的每个 provider 绑定 profile 或覆盖 request/extractor/credentials/validity；按 `P` 可从已知 provider 列表（models.json ∪ pi 内置目录）新建条目，键与 provider ID 大小写完全一致；凭据掩码显示，留空保持原值，输入 `-` 清除；
-- `profiles`：模板的增删改（`n` 新建），与 provider 条目共用同一个表单；内置模板（目前 `openrouter`）无需在 yaml 中定义即可绑定，同名自定义优先；
-- `orphanProviders`：隔离条目的恢复（节点移动，保留原注释）与彻底删除；
-- `refreshIntervalMinutes`：刷新间隔（留空恢复默认 5）；
-- 表单覆盖全部已知字段：`request.url/baseUrl/method/headers/body/timeoutSeconds`、`extractor.remainingPath/totalPath/usedPath/unit/unitPath/scale/errorPath/errorFallback`、`validity.path/allTruthy/firstDefined/fallback`；未列出的字段走"原始 JSON"兜底。
+## pi-starship 集成
 
-### TUI 编辑的原子性
+扩展只发布状态项，由 starship 渲染。请在 `~/.pi/agent/pi-starship.toml` 的 `[extension_status.icons]` 中区分图标：
 
-写入走 `config-edit.ts` 的定向编辑层：在配置锁内**从磁盘重新解析最新内容**，用 yaml Document API 只对被编辑的条目做 `setIn`/`deleteIn` 后原子写回（临时文件 + rename）。因此：
+```toml
+[extension_status.icons]
+balance = "💰"   # 余额型：balance $12.34
+quota   = "📊"   # 订阅型：quota CC 5h 15% ↺2h · mo 3% ↺4d
+tps     = "⚡"
+```
 
-- 未触碰的条目连同注释、格式、键序字节级原样保留（被替换条目内部的注释随节点重建）；
-- 面板打开期间的任何外部修改都不会导致保存失败，改动会在下一次保存时套用到最新内容上；
-- 每次 delete/restore 后空段骨架会被顺手移除；
-- 保存时把与具名模板完全一致的内联/别名展开 profile 归一化回字符串引用，避免别名被展开成内联副本而悄悄切断继承。
+渲染遵循 starship `extension_status` 的约束：不产出尾部 `(...)` 与逗号；超宽时按"保留 reset → 去 reset → 只留 5h"逐级降级。
 
-面板列表在每次动作后从磁盘重读，显示不会长期滞后。
+## TUI 编辑面板（/usage config）
 
-## 对账（provider-reconcile）
+列表 + 单键快捷操作：**Enter** 编辑选中条目 / **P** 新建余额配置 / **S** 新建订阅配置 / **n** 新建模板 / **d** 删除 / **y** 原始 YAML / **q** 退出。
+
+- `balances`：为每个 provider 绑定 profile 或覆盖 request/extractor/credentials/validity；键与 provider ID 大小写完全一致；凭据掩码显示，输入 `-` 清除；
+- `subscriptions`：选择 adapter 并覆盖 label/baseUrl/超时/宽度/附加请求头/凭据；
+- `profiles`：模板增删改；内置模板（`openrouter`）无需定义即可绑定，同名自定义优先；
+- `orphanBalances`：隔离条目的恢复（节点移动，保留原注释）与彻底删除；
+- `refreshIntervalMinutes`：刷新间隔（留空恢复默认 5）。
+
+写入走 `usage-edit.ts` 的定向编辑层：在配置锁内从磁盘重新解析最新内容，只对被编辑的条目做 `setIn`/`deleteIn` 后原子写回，未触摸条目的注释/格式/键序原样保留。
+
+## 对账（reconcile）
 
 余额配置与 `models.json` 只通过 Provider ID 关联：
 
-- 新增 Provider：只报告，不自动创建余额配置；
-- 已有 Provider：原样保留；
-- 删除 Provider：默认保留为 orphan 并报告；`--prune` 且用户确认后才隔离进 `orphanProviders`；
+- 新增 Provider：只报告，不自动创建配置；
+- 删除 Provider：默认保留为 orphan 并报告；`--prune` 且用户确认后才隔离进 `orphanBalances`；
 - pi 内置 provider（如 openrouter）不在 models.json 里，配置了也不算 orphan；
-- Provider 重命名：消费 `pi-model-manager` 在 `pi.events` 上广播的 `pi-model-manager:models-changed` 事件（`provider-rename`，无 secret），在配置锁内原子迁移 balance key，并把 alias 记入 `provider-balance-map.json`；
-- 冲突（如 newId 已有余额配置）：停止自动写入，报告冲突，不覆盖任一配置。
+- Provider 重命名：消费 `pi-model-manager` 广播的 `pi-model-manager:models-changed`（`provider-rename`），在锁内迁移余额 key 并记录 alias 到 `provider-usage-map.json`；
+- 订阅条目以 provider ID 为键、由内置适配器驱动，不参与隔离。
 
 ## 查询运行时（参照 pi-usage）
 
-余额查询的事件驱动/调度机制对齐 [pi-usage](https://github.com/narumiruna/pi-extensions/tree/main/packages/pi-usage) 的设计：
+- **不阻塞 pi**：网络请求全部后台异步，命令 handler 与事件回调绝不 `await`；
+- **缓存优先**：缓存新鲜时直接渲染，不解析认证、不发请求；
+- **定时调度**：`unref` 的递归 `setTimeout` 按 `refreshIntervalMinutes` 调度；
+- **失败退避**：失败后 30s 内事件刷新不再击打端点（`/usage update` 不受限），失败不缓存为新鲜值；
+- **在途中止**：切换 provider/session 时通过 generation + AbortController 立即中止旧请求；
+- **有界读取**：响应体上限 64KB；`timeoutSeconds` 与外部中止共同生效。
 
-- **不阻塞 pi**：所有网络请求都在后台异步完成，命令 handler 与事件回调绝不 `await` 网络请求，否则 pi 会把整个 agent 视为 busy；
-- **缓存优先快速上屏**：缓存新鲜时（`refreshIntervalMinutes` 内）直接用缓存渲染状态栏，不解析认证、不发请求；未命中才进入认证解析 + 请求流程；
-- **定时调度**：`unref` 的递归 `setTimeout` 按 `refreshIntervalMinutes` 调度后台刷新，不阻止进程退出；
-- **失败退避**：请求失败后 30s 内事件触发的刷新不再击打端点（`/balance update` 强制刷新不受限），避免端点持续故障时被事件风暴反复击打；失败结果也不会被缓存为新鲜值，退避期一过即自动重试；
-- **在途请求中止**：切换 provider / session 结束时，通过 generation + AbortController 立即中止上一个在途请求（TUN 黑洞等场景不再挂满超时时长），只有最新的在途查询能写状态栏；
-- **有界响应读取**：余额响应体上限 64KB，超限视为异常；`timeoutSeconds` 与外部中止共同生效。
+## 迁移
 
-## 安全
-
-扩展源码不保存密钥。余额请求优先使用 models.json/provider auth 的凭据，仅当 balance 配置明确提供专用 `credentials` 时使用专用引用。所有通知/错误输出先经过 `redactSecrets` 脱敏；对账事件和映射文件不包含 secret。
+首次启动若存在旧 `balance-config.yaml` 且无新文件，自动迁移：`providers → balances`、`orphanProviders → orphanBalances`、`providers.*.profile` 保留；旧文件保留不删，后续以 `usage-config.yaml` 为准。若曾用旧段名手写新文件，读取时同样兼容归一化。
 
 ## 开发与测试
 
 ```
-npm test   # node --test 覆盖 extractor、request 构造、config-store、config-edit、reconcile 纯逻辑
+npm install
+npm test   # node --test：extractor、request 构造、usage-store/edit、reconcile、订阅解析器与迁移
 ```

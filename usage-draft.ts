@@ -1,6 +1,6 @@
-// balance-draft.ts
+// usage-draft.ts
 //
-// 条目草稿的纯逻辑层：TUI 编辑器把 providers/profiles 条目当作 JsonObject 树就地修改。
+// 条目草稿的纯逻辑层：TUI 编辑器把 balances/subscriptions/profiles 条目当作 JsonObject 树就地修改。
 // 这里集中路径读写、headers 键值对转换、掩码与数字解析，便于脱离 TUI 做单元测试。
 
 import type { JsonObject } from "./types.ts";

@@ -3,7 +3,7 @@
 // request.headers 等字符串键值对编辑器：Enter/n 编辑或新增，d 删除，Esc 完成返回。
 
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import { findPairIndex, type HeaderPair } from "../balance-draft.ts";
+import { findPairIndex, type HeaderPair } from "../usage-draft.ts";
 import { padLabel, showPersistentShortcutMenu, type MenuCursor } from "./persistent-menu.ts";
 
 export type KvEditorResult = { type: "done"; pairs: HeaderPair[] } | { type: "cancel" };

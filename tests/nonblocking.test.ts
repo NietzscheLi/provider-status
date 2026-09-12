@@ -8,7 +8,7 @@ import providerStatusExtension from "../index.ts";
 
 const CONFIG = [
   "profiles: {}",
-  "providers:",
+  "balances:",
   "  demo:",
   "    request:",
   "      url: https://example.invalid/balance",
@@ -28,7 +28,7 @@ interface Harness {
 
 function setup(hangFetch: boolean): Harness {
   const dir = mkdtempSync(join("/tmp", "pi-provider-status-nb-"));
-  writeFileSync(join(dir, "balance-config.yaml"), CONFIG);
+  writeFileSync(join(dir, "usage-config.yaml"), CONFIG);
   process.env.PI_CODING_AGENT_DIR = dir;
 
   let finishFetch: ((response: Response) => void) | undefined;
@@ -85,7 +85,7 @@ async function settle(): Promise<void> {
 test("/balance update handler returns immediately while the balance request hangs", async () => {
   const harness = setup(true);
   try {
-    const handler = harness.commands.get("balance")!.handler;
+    const handler = harness.commands.get("usage")!.handler;
     const start = Date.now();
     // 挂起的 fetch 模拟 TUN 代理黑洞（直到 AbortSignal 超时都不返回）：
     // handler 必须在请求进行中就返回，否则 pi 会把整个 agent 视为 busy。
@@ -106,7 +106,7 @@ test("/balance update handler returns immediately while the balance request hang
 test("/balance status reports current state without waiting for the request", async () => {
   const harness = setup(true);
   try {
-    const handler = harness.commands.get("balance")!.handler;
+    const handler = harness.commands.get("usage")!.handler;
     const start = Date.now();
     await handler("", harness.ctx);
     assert.ok(Date.now() - start < 2000, `handler blocked for ${Date.now() - start}ms`);

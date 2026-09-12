@@ -44,7 +44,7 @@ export function getBuiltinProviderIds(): Promise<ReadonlySet<string>> {
 
 /**
  * 内置余额查询模板：providers 条目绑定同名 profile 时，
- * balance-config.yaml 的 profiles 段里没有同名模板也能直接使用。
+ * usage-config.yaml 的 profiles 段里没有同名模板也能直接使用。
  * 用户在 yaml 里自定义同名模板时优先级更高。
  */
 export const BUILTIN_PROFILES: Readonly<Record<string, JsonObject>> = {

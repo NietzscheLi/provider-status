@@ -1,11 +1,11 @@
-// tui/balance-dashboard.ts
+// tui/usage-dashboard.ts
 //
-// balance-config.yaml 编辑面板：列表 + 单键快捷操作。
+// usage-config.yaml 编辑面板：列表 + 单键快捷操作。
 //
-//   Enter 编辑选中条目 / n 新建模板 / d 删除（orphan 行会先弹出恢复/删除/查看菜单）
-//   / y 原始 YAML / q 退出
+//   Enter 编辑选中条目 / P 新建余额配置 / S 新建订阅配置 / n 新建模板 / d 删除
+//   y 原始 YAML / q 退出
 //
-// 列表每次动作后都从磁盘重新读取；写入走 config-edit.ts 的定向编辑，
+// 列表每次动作后都从磁盘重新读取；写入走 usage-edit.ts 的定向编辑，
 // 只触碰被编辑的条目，外部并发修改不会导致保存失败。
 
 import type { ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent";
@@ -19,17 +19,20 @@ import {
 	removeEntry,
 	restoreOrphanEntry,
 	upsertEntry,
-} from "../config-edit.ts";
-import { configFingerprint, serializeBalanceConfig } from "../config-store.ts";
-import { configPath, readConfig, refreshInterval } from "../config.ts";
+} from "../usage-edit.ts";
+import { configFingerprint, serializeUsageConfig } from "../usage-store.ts";
+import { configPath, readConfig, refreshInterval } from "../usage-config.ts";
 import { modelsPath, readModelsProviderIds, readKnownProviderIds } from "../reconcile.ts";
+import { adapterMeta, isSubscriptionAdapter, suggestAdapter } from "../subscription.ts";
 import type { JsonObject } from "../types.ts";
-import { editBalanceEntry } from "./balance-editor.ts";
+import { editBalanceEntry } from "./usage-editor.ts";
+import { editSubscriptionEntry } from "./subscription-editor.ts";
 import { padLabel, showOptionPicker, showPersistentShortcutMenu, type MenuCursor, type MenuRow } from "./persistent-menu.ts";
 
 type RowKind =
 	| { kind: "refresh" }
-	| { kind: "provider"; id: string }
+	| { kind: "balance"; id: string }
+	| { kind: "subscription"; id: string }
 	| { kind: "profile"; name: string }
 	| { kind: "orphan"; id: string };
 
@@ -47,13 +50,23 @@ function describeEntry(entry: JsonObject | undefined): string {
 	return url ? `自定义: ${url}` : "自定义";
 }
 
+function describeSubscription(entry: JsonObject | undefined): string {
+	if (!entry || Object.keys(entry).length === 0) return "(未配置)";
+	const adapter = isSubscriptionAdapter(entry.adapter) ? adapterMeta(entry.adapter)! : undefined;
+	const label = typeof entry.label === "string" && entry.label ? entry.label : adapter?.label ?? String(entry.adapter ?? "?");
+	const baseUrl = (() => {
+		const request = entry.request;
+		return request && typeof request === "object" ? (request as JsonObject).baseUrl : undefined;
+	})();
+	return `${label} · ${adapter?.id ?? "未知适配器"}${typeof baseUrl === "string" && baseUrl ? ` · ${baseUrl}` : ""}`;
+}
+
 function entrySummary(entry: JsonObject | undefined): string[] {
 	if (!entry || Object.keys(entry).length === 0) return ["  空条目：绑定模板或填入 request.url 后才会查询余额"];
 	const lines: string[] = [];
 	const request = entry.request;
 	if (request && typeof request === "object") {
-		const record = request as JsonObject;
-		lines.push(`  URL: ${typeof request === "object" ? String((request as JsonObject).url ?? "—") : "—"}`);
+		lines.push(`  URL: ${String((request as JsonObject).url ?? "—")}`);
 		if ((request as JsonObject).method) lines.push(`  Method: ${String((request as JsonObject).method)}`);
 	}
 	const credentials = entry.credentials;
@@ -66,15 +79,31 @@ function entrySummary(entry: JsonObject | undefined): string[] {
 	return lines;
 }
 
-export async function runBalanceDashboard(ctx: ExtensionCommandContext, agentDir: string): Promise<void> {
+function subscriptionSummary(entry: JsonObject | undefined): string[] {
+	if (!entry) return [];
+	const adapter = isSubscriptionAdapter(entry.adapter) ? adapterMeta(entry.adapter) : undefined;
+	const lines: string[] = [];
+	if (adapter) {
+		lines.push(`  接口: ${adapter.endpoint}`);
+		lines.push(`  参考实现: ${adapter.reference}`);
+	} else {
+		lines.push(`  适配器未设置或无效: ${String(entry.adapter ?? "—")}`);
+	}
+	lines.push(`  凭据: ${entry.credentials ? "条目内覆盖（已掩码）；其余用 pi 运行时解析" : "使用 pi 运行时解析的 provider 凭据"}`);
+	if (entry.maxWidth !== undefined) lines.push(`  状态栏宽度: ${String(entry.maxWidth)}`);
+	return lines;
+}
+
+export async function runUsageDashboard(ctx: ExtensionCommandContext, agentDir: string): Promise<void> {
 	const cursor: MenuCursor = { index: 0 };
 	const builtinIds = await getBuiltinProviderIds();
 	while (true) {
 		// 每轮都从磁盘重读，外部修改不会让面板卡在旧状态上。
 		const modelsProviderIds = existsSync(modelsPath(agentDir)) ? readModelsProviderIds(modelsPath(agentDir)) : new Set<string>();
-		const providers = readSectionEntries(agentDir, "providers");
+		const balances = readSectionEntries(agentDir, "balances");
+		const subscriptions = readSectionEntries(agentDir, "subscriptions");
 		const profiles = readSectionEntries(agentDir, "profiles");
-		const orphans = readSectionEntries(agentDir, "orphanProviders");
+		const orphans = readSectionEntries(agentDir, "orphanBalances");
 		const interval = refreshInterval(readConfig(agentDir));
 
 		const rows: DashboardRow[] = [{
@@ -82,13 +111,20 @@ export async function runBalanceDashboard(ctx: ExtensionCommandContext, agentDir
 			id: "refresh",
 			label: padLabel("刷新间隔", 16) + `${interval} 分钟`,
 		}];
-		// providers 列表 = models.json ∪ pi 内置 provider ∪ 已有配置键；内置且不在 models.json 的加 [内置] 标记。
-		for (const id of [...new Set([...modelsProviderIds, ...builtinIds, ...Object.keys(providers)])].sort()) {
+		for (const id of [...new Set([...modelsProviderIds, ...builtinIds, ...Object.keys(balances)])].sort()) {
 			const builtinOnly = builtinIds.has(id) && !modelsProviderIds.has(id);
 			rows.push({
-				meta: { kind: "provider", id },
-				id: `provider:${id}`,
-				label: padLabel(builtinOnly ? `[内置] ${id}` : id, 28) + describeEntry(providers[id]),
+				meta: { kind: "balance", id },
+				id: `balance:${id}`,
+				label: padLabel(builtinOnly ? `[余额][内置] ${id}` : `[余额] ${id}`, 30) + describeEntry(balances[id]),
+				searchText: id,
+			});
+		}
+		for (const id of Object.keys(subscriptions).sort()) {
+			rows.push({
+				meta: { kind: "subscription", id },
+				id: `subscription:${id}`,
+				label: padLabel(`[订阅] ${id}`, 30) + describeSubscription(subscriptions[id]),
 				searchText: id,
 			});
 		}
@@ -96,7 +132,7 @@ export async function runBalanceDashboard(ctx: ExtensionCommandContext, agentDir
 			rows.push({
 				meta: { kind: "profile", name },
 				id: `profile:${name}`,
-				label: padLabel(`[模板] ${name}`, 28) + describeEntry(profiles[name]),
+				label: padLabel(`[模板] ${name}`, 30) + describeEntry(profiles[name]),
 				searchText: name,
 			});
 		}
@@ -104,27 +140,29 @@ export async function runBalanceDashboard(ctx: ExtensionCommandContext, agentDir
 			rows.push({
 				meta: { kind: "orphan", id },
 				id: `orphan:${id}`,
-				label: padLabel(`[隔离] ${id}`, 28) + describeEntry(orphans[id]),
+				label: padLabel(`[隔离] ${id}`, 30) + describeEntry(orphans[id]),
 				searchText: id,
 			});
 		}
 
 		const detailLines = (row: DashboardRow | undefined, _theme: Theme): string[] => {
 			if (!row) return [];
-			if (row.meta.kind === "refresh") return ["  每次会话读取余额的默认间隔；provider 条目可各自覆盖后端行为"];
-			if (row.meta.kind === "provider") return entrySummary(providers[row.meta.id]);
+			if (row.meta.kind === "refresh") return ["  每次会话读取用量的默认间隔；余额条目可用 request.timeoutSeconds 覆盖单次请求超时"];
+			if (row.meta.kind === "balance") return entrySummary(balances[row.meta.id]);
+			if (row.meta.kind === "subscription") return subscriptionSummary(subscriptions[row.meta.id]);
 			if (row.meta.kind === "profile") return entrySummary(profiles[row.meta.name]);
 			return entrySummary(orphans[row.meta.id]);
 		};
 
-		const action = await showPersistentShortcutMenu<"new-provider" | "new" | "raw" | "quit" | "delete">(
+		const action = await showPersistentShortcutMenu<"new-balance" | "new-subscription" | "new" | "raw" | "quit" | "delete">(
 			ctx,
-			"balance-config",
+			"usage-config",
 			"",
 			rows.map((row) => ({ ...row })),
 			cursor,
 			[
-				{ input: "p", shortcut: "new-provider" },
+				{ input: "p", shortcut: "new-balance" },
+				{ input: "s", shortcut: "new-subscription" },
 				{ input: "n", shortcut: "new" },
 				{ input: "d", shortcut: "delete" },
 				{ input: "y", shortcut: "raw" },
@@ -132,17 +170,18 @@ export async function runBalanceDashboard(ctx: ExtensionCommandContext, agentDir
 			],
 			{
 				getSummaryLines: () => [
-					`providers ${Object.keys(providers).length} · profiles ${Object.keys(profiles).length} · orphan ${Object.keys(orphans).length} · 刷新 ${interval} 分钟`,
-					"profile 是请求模板，provider 绑定模板并可覆盖同名字段；[内置] 行来自 pi 内置目录，不在 models.json 里",
+					`balances ${Object.keys(balances).length} · subscriptions ${Object.keys(subscriptions).length} · profiles ${Object.keys(profiles).length} · orphan ${Object.keys(orphans).length} · 刷新 ${interval} 分钟`,
+					"[余额] 走 request/extractor 引擎；[订阅] 走内置适配器（ollama/commandcode/opencode-go/glm/chatgpt/kimi）",
 				],
-				tableHeader: padLabel("条目", 28) + "绑定",
+				tableHeader: padLabel("条目", 30) + "配置",
 				formatRow: (row) => row.label,
 				getDetailLines: detailLines,
 				emptyLabel: "暂无条目",
 				hints: [
 					{ key: "↑↓", label: "选择" },
 					{ key: "Enter", label: "编辑" },
-					{ key: "P", label: "新建 Provider 配置" },
+					{ key: "P", label: "新建余额配置" },
+					{ key: "S", label: "新建订阅配置" },
 					{ key: "n", label: "新建模板" },
 					{ key: "d", label: "删除" },
 					{ key: "y", label: "原始 YAML" },
@@ -153,8 +192,13 @@ export async function runBalanceDashboard(ctx: ExtensionCommandContext, agentDir
 
 		if (action.type === "cancel" || (action.type === "shortcut" && action.shortcut === "quit")) return;
 
-		if (action.type === "shortcut" && action.shortcut === "new-provider") {
-			await createProviderEntry(ctx, agentDir, readKnownProviderIds(modelsPath(agentDir), builtinIds), providers);
+		if (action.type === "shortcut" && action.shortcut === "new-balance") {
+			await createBalanceEntry(ctx, agentDir, readKnownProviderIds(modelsPath(agentDir), builtinIds), balances);
+			continue;
+		}
+
+		if (action.type === "shortcut" && action.shortcut === "new-subscription") {
+			await createSubscriptionEntry(ctx, agentDir, readKnownProviderIds(modelsPath(agentDir), builtinIds), subscriptions);
 			continue;
 		}
 
@@ -163,7 +207,7 @@ export async function runBalanceDashboard(ctx: ExtensionCommandContext, agentDir
 			if (name === undefined) continue;
 			const trimmed = name.trim();
 			if (!trimmed) continue;
-			if (profiles[trimmed] || orphans[trimmed]) {
+			if (profiles[trimmed]) {
 				await ctx.ui.notify(`模板 ${trimmed} 已存在`, "warning");
 				continue;
 			}
@@ -177,9 +221,9 @@ export async function runBalanceDashboard(ctx: ExtensionCommandContext, agentDir
 
 		if (action.type === "shortcut" && action.shortcut === "raw") {
 			const path = configPath(agentDir);
-			const before = existsSync(path) ? readFileSync(path, "utf8") : serializeBalanceConfig({ profiles: {}, providers: {} });
+			const before = existsSync(path) ? readFileSync(path, "utf8") : serializeUsageConfig({ profiles: {}, balances: {}, subscriptions: {} });
 			const fingerprint = configFingerprint(agentDir);
-			const text = await ctx.ui.editor("balance-config.yaml（原始 YAML）", before);
+			const text = await ctx.ui.editor("usage-config.yaml（原始 YAML）", before);
 			if (text === undefined) continue;
 			try {
 				await overwriteConfigFile(agentDir, text, fingerprint);
@@ -189,7 +233,6 @@ export async function runBalanceDashboard(ctx: ExtensionCommandContext, agentDir
 			continue;
 		}
 
-		// d：删除当前选中行；orphan 行复用恢复/删除/查看菜单。
 		if (action.type === "shortcut" && action.shortcut === "delete") {
 			const selected = rows[cursor.index];
 			if (!selected) continue;
@@ -200,12 +243,12 @@ export async function runBalanceDashboard(ctx: ExtensionCommandContext, agentDir
 			if (selected.meta.kind === "orphan") {
 				const choice = await showOptionPicker(ctx, `[隔离] ${selected.meta.id}`, [
 					{ id: "delete", label: "彻底删除" },
-					{ id: "restore", label: "恢复到 providers" },
+					{ id: "restore", label: "恢复到 balances" },
 				], "delete");
 				if (!choice) continue;
 				try {
 					if (choice.id === "delete") {
-						if (await ctx.ui.confirm("彻底删除隔离条目", selected.meta.id)) await removeEntry(agentDir, "orphanProviders", selected.meta.id);
+						if (await ctx.ui.confirm("彻底删除隔离条目", selected.meta.id)) await removeEntry(agentDir, "orphanBalances", selected.meta.id);
 					} else {
 						await restoreOrphanEntry(agentDir, selected.meta.id);
 					}
@@ -214,14 +257,17 @@ export async function runBalanceDashboard(ctx: ExtensionCommandContext, agentDir
 				}
 				continue;
 			}
-			const isProfileDelete = selected.meta.kind === "profile";
-			const deleteSection = isProfileDelete ? "profiles" : "providers";
-			const deleteId = isProfileDelete ? selected.meta.name : selected.meta.id;
-			if (selected.meta.kind === "provider" && !providers[selected.meta.id]) {
+			const deleteSection = selected.meta.kind === "profile" ? "profiles" : selected.meta.kind === "subscription" ? "subscriptions" : "balances";
+			const deleteId = selected.meta.kind === "profile" ? selected.meta.name : selected.meta.id;
+			if (selected.meta.kind === "balance" && !balances[selected.meta.id]) {
 				await ctx.ui.notify(`${deleteId} 尚无余额配置；按 P 新建`, "info");
 				continue;
 			}
-			if (await ctx.ui.confirm(`删除 ${isProfileDelete ? "模板" : "余额配置"}`, deleteId)) {
+			if (selected.meta.kind === "subscription" && !subscriptions[selected.meta.id]) {
+				await ctx.ui.notify(`${deleteId} 尚无订阅配置；按 S 新建`, "info");
+				continue;
+			}
+			if (await ctx.ui.confirm(`删除 ${selected.meta.kind === "profile" ? "模板" : selected.meta.kind === "subscription" ? "订阅配置" : "余额配置"}`, deleteId)) {
 				try {
 					await removeEntry(agentDir, deleteSection, deleteId);
 				} catch (error) {
@@ -253,7 +299,7 @@ export async function runBalanceDashboard(ctx: ExtensionCommandContext, agentDir
 		}
 		if (row.meta.kind === "orphan") {
 			const choice = await showOptionPicker(ctx, `[隔离] ${row.meta.id}`, [
-				{ id: "restore", label: "恢复到 providers（若 models.json 中无此 provider，下次对账会再次隔离）" },
+				{ id: "restore", label: "恢复到 balances（若 models.json 中无此 provider，下次对账会再次隔离）" },
 				{ id: "delete", label: "彻底删除" },
 				{ id: "edit", label: "查看/编辑（仍保留在隔离区）" },
 			], "restore");
@@ -262,29 +308,43 @@ export async function runBalanceDashboard(ctx: ExtensionCommandContext, agentDir
 				if (choice.id === "restore") {
 					await restoreOrphanEntry(agentDir, row.meta.id);
 				} else if (choice.id === "delete") {
-					if (await ctx.ui.confirm("彻底删除隔离条目", row.meta.id)) await removeEntry(agentDir, "orphanProviders", row.meta.id);
+					if (await ctx.ui.confirm("彻底删除隔离条目", row.meta.id)) await removeEntry(agentDir, "orphanBalances", row.meta.id);
 				} else {
-					await editStoredEntry(ctx, agentDir, "orphanProviders", row.meta.id, orphans[row.meta.id], false);
+					await editStoredBalanceEntry(ctx, agentDir, "orphanBalances", row.meta.id, orphans[row.meta.id], false);
 				}
 			} catch (error) {
 				await ctx.ui.notify(error instanceof Error ? error.message : String(error), "warning");
 			}
 			continue;
 		}
+		if (row.meta.kind === "subscription") {
+			const draft: JsonObject = structuredClone(subscriptions[row.meta.id] ?? {});
+			const outcome = await editSubscriptionEntry(ctx, `订阅配置: ${row.meta.id}`, draft);
+			if (outcome.action === "cancel") continue;
+			if (!isSubscriptionAdapter(outcome.entry.adapter)) {
+				await ctx.ui.notify("未选择有效的订阅适配器，已取消保存", "warning");
+				continue;
+			}
+			try {
+				await upsertEntry(agentDir, "subscriptions", row.meta.id, outcome.entry);
+			} catch (error) {
+				await ctx.ui.notify(`写入失败：${error instanceof Error ? error.message : String(error)}`, "error");
+			}
+			continue;
+		}
 
-		// provider / profile 行：Enter 编辑（d 已在上文处理）。
 		const isProfile = row.meta.kind === "profile";
-		const section = isProfile ? "profiles" : "providers";
+		const section = isProfile ? "profiles" : "balances";
 		const entryId = isProfile ? row.meta.name : (row.meta as { id: string }).id;
-		const existing: JsonObject | undefined = isProfile ? profiles[entryId] : providers[entryId];
-		await editStoredEntry(ctx, agentDir, section, entryId, existing, isProfile);
+		const existing: JsonObject | undefined = isProfile ? profiles[entryId] : balances[entryId];
+		await editStoredBalanceEntry(ctx, agentDir, section, entryId, existing, isProfile);
 	}
 }
 
-async function editStoredEntry(
+async function editStoredBalanceEntry(
 	ctx: ExtensionCommandContext,
 	agentDir: string,
-	section: "providers" | "profiles" | "orphanProviders",
+	section: "balances" | "profiles" | "orphanBalances",
 	id: string,
 	existing: JsonObject | undefined,
 	isProfile: boolean,
@@ -308,25 +368,55 @@ async function editStoredEntry(
 }
 
 /**
- * 新建 provider 余额配置：仅从已知 provider ID 列表选择（models.json ∪ pi 内置目录），
- * 不提供自由输入；providers 键必须与 provider ID 大小写完全一致才生效，列表选择从源头避免拼写不一致。
+ * 新建余额配置：仅从已知 provider ID 列表选择（models.json ∪ pi 内置目录），
+ * 不提供自由输入；balances 键必须与 provider ID 大小写完全一致才生效。
  * 有同名内置模板（如 openrouter）时自动预绑定。
  */
-async function createProviderEntry(
+async function createBalanceEntry(
 	ctx: ExtensionCommandContext,
 	agentDir: string,
 	knownIds: ReadonlySet<string>,
-	providers: Record<string, JsonObject>,
+	balances: Record<string, JsonObject>,
 ): Promise<void> {
-	const candidates = [...knownIds].filter((id) => !(id in providers)).sort();
+	const candidates = [...knownIds].filter((id) => !(id in balances)).sort();
 	if (candidates.length === 0) {
 		await ctx.ui.notify("models.json 与 pi 内置目录中的 provider 都已有余额配置", "info");
 		return;
 	}
 	const choice = await showOptionPicker(ctx, "新建 Provider 余额配置（键需与 provider ID 大小写完全一致）", candidates.map((id) => ({ id, label: id })), candidates[0]!);
 	if (!choice) return;
-	const id = choice.id;
-	// 内置模板同名时预绑定，保存后即开箱可用；仍可在表单里改绑其它模板。
-	const draft: JsonObject = isBuiltinProfile(id) ? { profile: id } : {};
-	await editStoredEntry(ctx, agentDir, "providers", id, structuredClone(draft), false);
+	const draft: JsonObject = isBuiltinProfile(choice.id) ? { profile: choice.id } : {};
+	await editStoredBalanceEntry(ctx, agentDir, "balances", choice.id, structuredClone(draft), false);
+}
+
+/** 新建订阅配置：从已知 provider ID 中选择，按 ID 预选适配器后进入编辑器。 */
+async function createSubscriptionEntry(
+	ctx: ExtensionCommandContext,
+	agentDir: string,
+	knownIds: ReadonlySet<string>,
+	subscriptions: Record<string, JsonObject>,
+): Promise<void> {
+	const candidates = [...knownIds].filter((id) => !(id in subscriptions)).sort();
+	if (candidates.length === 0) {
+		await ctx.ui.notify("已知 provider 都已有订阅配置", "info");
+		return;
+	}
+	const choice = await showOptionPicker(ctx, "新建订阅配置（键需与 provider ID 大小写完全一致）", candidates.map((id) => {
+		const suggested = suggestAdapter(id);
+		return { id, label: suggested ? `${id}  →  ${suggested}` : id };
+	}), candidates[0]!);
+	if (!choice) return;
+	const suggested = suggestAdapter(choice.id);
+	const draft: JsonObject = suggested ? { adapter: suggested } : {};
+	const outcome = await editSubscriptionEntry(ctx, `订阅配置: ${choice.id}`, draft);
+	if (outcome.action === "cancel") return;
+	if (!isSubscriptionAdapter(outcome.entry.adapter)) {
+		await ctx.ui.notify("未选择有效的订阅适配器，已取消保存", "warning");
+		return;
+	}
+	try {
+		await upsertEntry(agentDir, "subscriptions", choice.id, outcome.entry);
+	} catch (error) {
+		await ctx.ui.notify(`写入失败：${error instanceof Error ? error.message : String(error)}`, "error");
+	}
 }

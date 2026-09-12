@@ -2,23 +2,22 @@ import { createHash } from "node:crypto";
 import { closeSync, existsSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { stringify as stringifyYaml } from "yaml";
-import { configPath, readConfig } from "./config.ts";
-import type { BalanceConfig, JsonObject } from "./types.ts";
+import { LOCK_NAME, configPath, readConfig } from "./usage-config.ts";
+import type { JsonObject, UsageConfig } from "./types.ts";
 
-export const LOCK_NAME = "balance-config.lock";
 const LOCK_STALE_MS = 30_000;
 const LOCK_TIMEOUT_MS = 5_000;
 
 export class ExternalModificationError extends Error {
 	constructor() {
-		super("balance-config.yaml was modified outside of this extension; refusing to overwrite");
+		super("usage-config.yaml was modified outside of this extension; refusing to overwrite");
 		this.name = "ExternalModificationError";
 	}
 }
 
 export class LockConflictError extends Error {
 	constructor() {
-		super("balance-config.yaml is locked by another writer");
+		super("usage-config.yaml is locked by another writer");
 		this.name = "LockConflictError";
 	}
 }
@@ -75,20 +74,20 @@ export async function withConfigLock<T>(agentDir: string, fn: () => Promise<T> |
 }
 
 export interface ConfigUpdateResult {
-	config: BalanceConfig;
+	config: UsageConfig;
 	fingerprint: string;
 	changed: boolean;
 }
 
 /**
- * Applies `mutate` to the balance config and persists it with temp-file + atomic
+ * Applies `mutate` to the usage config and persists it with temp-file + atomic
  * rename. Must be called inside `withConfigLock`. When `expectedFingerprint` is
  * provided and no longer matches the on-disk content, the write is rejected and
  * the file is left untouched.
  */
 export function updateConfig(
 	agentDir: string,
-	mutate: (config: BalanceConfig) => BalanceConfig | undefined,
+	mutate: (config: UsageConfig) => UsageConfig | undefined,
 	expectedFingerprint?: string,
 ): ConfigUpdateResult {
 	const path = configPath(agentDir);
@@ -98,7 +97,7 @@ export function updateConfig(
 	const fingerprint = currentFingerprint ?? "";
 	if (!next) return { config: readConfig(agentDir), fingerprint, changed: false };
 	const tempPath = `${path}.tmp-${process.pid}-${Math.random().toString(36).slice(2)}`;
-	writeFileSync(tempPath, serializeBalanceConfig(next), { mode: 0o600 });
+	writeFileSync(tempPath, serializeUsageConfig(next), { mode: 0o600 });
 	renameSync(tempPath, path);
 	return { config: next, fingerprint: fingerprintFile(path)!, changed: true };
 }
@@ -109,20 +108,21 @@ export function updateConfig(
  */
 export async function mutateConfig(
 	agentDir: string,
-	mutate: (config: BalanceConfig) => BalanceConfig | undefined,
+	mutate: (config: UsageConfig) => UsageConfig | undefined,
 ): Promise<ConfigUpdateResult> {
 	return withConfigLock(agentDir, () => updateConfig(agentDir, mutate));
 }
 
-export function serializeBalanceConfig(config: BalanceConfig): string {
+export function serializeUsageConfig(config: UsageConfig): string {
 	const body = stringifyYaml(config, { defaultStringType: "QUOTE_DOUBLE", lineWidth: 0 });
-	return `# Managed by pi-provider-status. Quarantined orphan entries are preserved in orphanProviders.\n${body}`;
+	return `# Managed by pi-provider-status. Quarantined orphan entries are preserved in orphanBalances.\n${body}`;
 }
 
 /** Removes any configured credential value from `message` before it reaches UI, logs or tests. */
-export function redactSecrets(message: string, config: BalanceConfig): string {
+export function redactSecrets(message: string, config: UsageConfig): string {
 	let result = message;
-	for (const section of [config.profiles ?? {}, config.providers ?? {}, config.orphanProviders ?? {}]) {
+	const sections = [config.profiles ?? {}, config.balances ?? {}, config.subscriptions ?? {}, config.orphanBalances ?? {}];
+	for (const section of sections) {
 		for (const entry of Object.values(section)) {
 			if (!entry || typeof entry !== "object") continue;
 			const credentials = (entry as JsonObject).credentials;

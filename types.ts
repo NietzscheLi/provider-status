@@ -1,11 +1,68 @@
 export type JsonObject = Record<string, unknown>;
-export interface BalanceConfig extends JsonObject {
-  refreshIntervalMinutes?: number;
-  profiles?: JsonObject;
-  providers?: JsonObject;
-  orphanProviders?: JsonObject;
+
+/** 订阅型 provider 的内置适配器 ID。 */
+export type SubscriptionAdapterId =
+	| "ollama"
+	| "commandcode"
+	| "opencode-go"
+	| "glm"
+	| "chatgpt"
+	| "kimi";
+
+/** 订阅额度窗口：percent 为已用百分比（0-100），resetsAt 为 ISO 时间（可能缺失）。 */
+export interface UsageWindow {
+	label: string;
+	percent: number;
+	resetsAt?: string;
 }
-export interface BalanceState { text: string; loading: boolean; error?: string; updatedAt?: number; }
-export interface BalanceSource { baseUrl?: string; apiKey?: string; }
-export interface BalanceResult { providerId: string; state: BalanceState; }
-export interface FetchLike { (input: string | URL, init?: RequestInit): Promise<Response>; }
+
+/** 余额型结果：text 已完成单位与格式化（如 `$12.34`）。 */
+export interface BalanceValue {
+	kind: "balance";
+	text: string;
+}
+
+/** 订阅型结果：text 已完成 starship 友好的窗口渲染。 */
+export interface SubscriptionValue {
+	kind: "subscription";
+	text: string;
+	windows: UsageWindow[];
+}
+
+export type UsageValue = BalanceValue | SubscriptionValue;
+
+export interface UsageState {
+	value?: UsageValue;
+	loading: boolean;
+	error?: string;
+	updatedAt?: number;
+}
+
+/** 查询运行时解析出的凭据（来自 modelRegistry.getApiKeyAndHeaders）。 */
+export interface UsageSource {
+	baseUrl?: string;
+	apiKey?: string;
+	accessToken?: string;
+	headers?: Record<string, string>;
+}
+
+export interface UsageResult {
+	providerId: string;
+	state: UsageState;
+}
+
+export interface FetchLike {
+	(input: string | URL, init?: RequestInit): Promise<Response>;
+}
+
+export interface UsageConfig extends JsonObject {
+	refreshIntervalMinutes?: number;
+	/** 余额模板（公共请求/提取协议）。 */
+	profiles?: JsonObject;
+	/** 余额型 provider 配置（旧段名 providers）。 */
+	balances?: JsonObject;
+	/** 订阅型 provider 配置（adapter 指向内置适配器）。 */
+	subscriptions?: JsonObject;
+	/** 隔离的孤儿余额配置（旧段名 orphanProviders）。 */
+	orphanBalances?: JsonObject;
+}

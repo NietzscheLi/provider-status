@@ -1,4 +1,4 @@
-// tui/balance-editor.ts
+// tui/usage-editor.ts
 //
 // 余额条目编辑器：providers 覆盖配置与 profiles 模板共用同一个表单。
 // 草稿就是条目的 JsonObject 树（深拷贝），已知字段就地读写；
@@ -13,7 +13,7 @@ import {
 	setValueAtPath,
 	stableStringify,
 	valueAtPath,
-} from "../balance-draft.ts";
+} from "../usage-draft.ts";
 import type { JsonObject } from "../types.ts";
 import { editHeaders } from "./kv-editor.ts";
 import { padLabel, showOptionPicker, showPersistentFormMenu, type MenuCursor } from "./persistent-menu.ts";
@@ -59,7 +59,7 @@ function fallbackText(draft: JsonObject, base: JsonObject | undefined): string {
 	return value === undefined ? "<无>" : String(value);
 }
 
-function buildRows(draft: JsonObject, showProfile: boolean, profileNames: readonly string[], base?: JsonObject): FieldSpec[] {
+function buildBalanceRows(draft: JsonObject, showProfile: boolean, profileNames: readonly string[], base?: JsonObject): FieldSpec[] {
 	const rows: FieldSpec[] = [];
 	if (showProfile) {
 		const rawProfile = draft.profile;
@@ -213,13 +213,13 @@ export async function editBalanceEntry(
 	const base = options.base;
 	const cursor: MenuCursor = { index: 0 };
 	while (true) {
-		const rows = buildRows(draft, options.showProfile, options.profileNames, base);
+		const rows = buildBalanceRows(draft, options.showProfile, options.profileNames, base);
 		const menuRows = rows.map((row) => ({ id: row.id, label: `${padLabel(row.label, 16)}${row.value}`, searchText: `${row.label}\n${row.value}` }));
 		const action = await showPersistentFormMenu(ctx, title, "", menuRows, cursor, {
 			getSummaryLines: () => [
 				`URL ${textOr(effectiveAt(draft, base, "request.url"), "—")} · 模板 ${textOr(draft.profile, options.showProfile ? "<无>" : "n/a")}`,
 				"表单预填 profile -> provider 合并后的有效值，（继承）表示未覆盖；provider 同名字段覆盖模板",
-				"Ctrl+S 保存到 balance-config.yaml；Esc 返回列表",
+				"Ctrl+S 保存到 usage-config.yaml；Esc 返回列表",
 			],
 			hints: [
 				{ key: "↑↓", label: "选择" },
@@ -298,4 +298,9 @@ export async function editBalanceEntry(
 		const spec = rows.find((row) => row.id === id);
 		if (spec) await editTextField(ctx, draft, id, spec.label, base);
 	}
+}
+
+/** 导出给覆盖率测试：余额条目表单必须覆盖运行时读取的全部字段。 */
+export function balanceFormRows(draft: JsonObject, showProfile = true, profileNames: readonly string[] = [], base?: JsonObject) {
+	return buildBalanceRows(draft, showProfile, profileNames, base);
 }

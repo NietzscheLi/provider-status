@@ -1,33 +1,72 @@
-// config-edit.ts
+// usage-edit.ts
 //
-// balance-config.yaml 的定向（原子级）编辑层。
+// usage-config.yaml 的定向（原子级）编辑层。
 //
-// 与 config-store.ts 的整文件读-改-写不同，这里用 yaml 的 Document API：
+// 与 usage-store.ts 的整文件读-改-写不同，这里用 yaml 的 Document API：
 // 只对被编辑的条目做 setIn/deleteIn，未触动的条目连同注释、格式、键序一起原样保留；
 // 每次编辑都在锁内从磁盘重新解析最新内容后套用改动，因此外部并发修改不会导致失败，
 // 最多表现为"编辑面板里的列表显示稍有滞后"（每次动作后列表会重新读取）。
 
 import { Document, YAMLMap, parseDocument, isMap, isNode } from "yaml";
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { configPath } from "./config.ts";
-import { configFingerprint, withConfigLock } from "./config-store.ts";
+import { LEGACY_CONFIG_NAME, configPath, legacyConfigPath } from "./usage-config.ts";
+import { configFingerprint, withConfigLock } from "./usage-store.ts";
 import type { JsonObject } from "./types.ts";
 
-export type ConfigSection = "providers" | "profiles" | "orphanProviders";
+export type ConfigSection = "balances" | "profiles" | "subscriptions" | "orphanBalances";
+
+/** 旧文件使用的段名，迁移时映射到新段名。 */
+const LEGACY_SECTION_MAP: Record<string, ConfigSection> = {
+	providers: "balances",
+	orphanProviders: "orphanBalances",
+};
+
+function baseDocument(): Document {
+	const doc = new Document({ refreshIntervalMinutes: 5, profiles: {}, balances: {}, subscriptions: {} });
+	doc.commentBefore = " Managed by pi-provider-status. Quarantined orphan entries are preserved in orphanBalances.";
+	return doc;
+}
+
+function writeDocument(agentDir: string, doc: Document): void {
+	const path = configPath(agentDir);
+	const tempPath = `${path}.tmp-${process.pid}-${Math.random().toString(36).slice(2)}`;
+	writeFileSync(tempPath, `${String(doc)}\n`, { mode: 0o600 });
+	renameSync(tempPath, path);
+}
 
 /**
- * 启动时检测：若 pi 配置目录中缺少 balance-config.yaml，则初始化一份基础配置。
- * 已存在时什么都不做（不覆盖、不补写），也不校验其内容（交由使用时的 readConfig 报错）。
+ * 旧 balance-config.yaml → 新 usage-config.yaml 的一次性迁移：
+ * 旧文件存在且新文件缺失时，映射 providers→balances、orphanProviders→orphanBalances 并写入新文件；
+ * 旧文件保留不删（回滚安全），后续读取以新文件为准。
+ */
+export function migrateLegacyConfig(agentDir: string): boolean {
+	const legacyPath = legacyConfigPath(agentDir);
+	if (existsSync(configPath(agentDir)) || !existsSync(legacyPath)) return false;
+	const legacy = parseDocument(readFileSync(legacyPath, "utf8"), { merge: true });
+	if (legacy.errors.length > 0 || !isMap(legacy.contents)) return false;
+	const doc = new Document(legacy.toJSON());
+	doc.commentBefore = " Managed by pi-provider-status. Migrated from balance-config.yaml; quarantined orphan entries are preserved in orphanBalances.";
+	for (const [from, to] of Object.entries(LEGACY_SECTION_MAP)) {
+		const value = doc.get(from);
+		if (value === undefined) continue;
+		if (doc.get(to) === undefined) doc.set(to, value);
+		doc.delete(from);
+	}
+	if (doc.get("balances") === undefined) doc.set("balances", new YAMLMap());
+	if (doc.get("subscriptions") === undefined) doc.set("subscriptions", new YAMLMap());
+	writeDocument(agentDir, doc);
+	return true;
+}
+
+/**
+ * 启动时检测：若 pi 配置目录中既没有新文件也没有旧文件，则初始化一份基础配置。
+ * 旧文件存在时执行一次性迁移；已存在新文件时什么都不做（不覆盖、不补写）。
  */
 export async function ensureBaseConfigFile(agentDir: string): Promise<void> {
 	await withConfigLock(agentDir, () => {
-		const path = configPath(agentDir);
-		if (existsSync(path)) return;
-		const doc = new Document({ refreshIntervalMinutes: 5, profiles: {}, providers: {} });
-		doc.commentBefore = " Managed by pi-provider-status. Quarantined orphan entries are preserved in orphanProviders.";
-		const tempPath = `${path}.tmp-${process.pid}-${Math.random().toString(36).slice(2)}`;
-		writeFileSync(tempPath, `${String(doc)}\n`, { mode: 0o600 });
-		renameSync(tempPath, path);
+		if (migrateLegacyConfig(agentDir)) return;
+		if (existsSync(configPath(agentDir))) return;
+		writeDocument(agentDir, baseDocument());
 	});
 }
 
@@ -39,22 +78,20 @@ export async function editConfigDocument(agentDir: string, edit: (doc: Document)
 		if (existsSync(path)) {
 			doc = parseDocument(readFileSync(path, "utf8"), { merge: true });
 			if (doc.errors.length > 0) {
-				throw new Error(`balance-config.yaml 无法解析，请先手工修复：${doc.errors[0]!.message}`);
+				throw new Error(`usage-config.yaml 无法解析，请先手工修复：${doc.errors[0]!.message}`);
 			}
 			if (!isMap(doc.contents)) {
-				throw new Error("balance-config.yaml 顶层必须是映射（key: value 形式）");
+				throw new Error("usage-config.yaml 顶层必须是映射（key: value 形式）");
 			}
 		} else {
 			doc = new Document({});
-			doc.commentBefore = " Managed by pi-provider-status. Quarantined orphan entries are preserved in orphanProviders.";
+			doc.commentBefore = " Managed by pi-provider-status. Quarantined orphan entries are preserved in orphanBalances.";
 		}
 		const before = String(doc);
 		edit(doc);
 		const after = String(doc);
 		if (after === before) return false;
-		const tempPath = `${path}.tmp-${process.pid}-${Math.random().toString(36).slice(2)}`;
-		writeFileSync(tempPath, `${after}\n`, { mode: 0o600 });
-		renameSync(tempPath, path);
+		writeDocument(agentDir, doc);
 		return true;
 	});
 }
@@ -64,7 +101,7 @@ export function readSectionEntries(agentDir: string, section: ConfigSection): Re
 	const path = configPath(agentDir);
 	if (!existsSync(path)) return {};
 	const doc = parseDocument(readFileSync(path, "utf8"), { merge: true });
-	if (doc.errors.length > 0) throw new Error(`balance-config.yaml 无法解析：${doc.errors[0]!.message}`);
+	if (doc.errors.length > 0) throw new Error(`usage-config.yaml 无法解析：${doc.errors[0]!.message}`);
 	const value = doc.getIn([section]);
 	if (!isMap(value)) return {};
 	const result: Record<string, JsonObject> = {};
@@ -79,7 +116,7 @@ export function readSectionEntries(agentDir: string, section: ConfigSection): Re
 function ensureMap(doc: Document, key: string): void {
 	const existing = doc.get(key);
 	if (isMap(existing)) return;
-	if (existing !== undefined) throw new Error(`balance-config.yaml 的 ${key} 段不是映射，无法安全编辑`);
+	if (existing !== undefined) throw new Error(`usage-config.yaml 的 ${key} 段不是映射，无法安全编辑`);
 	// 必须是真 YAMLMap 节点，后续 setIn/deleteIn 才能沿路径生效。
 	doc.set(key, new YAMLMap());
 }
@@ -107,19 +144,19 @@ export async function removeEntry(agentDir: string, section: ConfigSection, id: 
 }
 
 /**
- * orphan 恢复：把 `orphanProviders.<id>` 的**原节点**移动到 `providers.<id>`。
+ * orphan 恢复：把 `orphanBalances.<id>` 的**原节点**移动到 `balances.<id>`。
  * 节点移动保留了原始的格式与注释；目标已存在时抛错，由调用方提示用户。
  */
 export async function restoreOrphanEntry(agentDir: string, id: string): Promise<void> {
 	await editConfigDocument(agentDir, (doc) => {
-		ensureMap(doc, "orphanProviders");
-		const node = doc.getIn(["orphanProviders", id]);
-		if (!isNode(node) && node === undefined) throw new Error(`orphanProviders 中不存在 ${id}`);
-		ensureMap(doc, "providers");
-		if (doc.getIn(["providers", id]) !== undefined) throw new Error(`providers 中已存在 ${id}，无法恢复`);
-		doc.setIn(["providers", id], node);
-		doc.deleteIn(["orphanProviders", id]);
-		deleteSectionIfEmpty(doc, "orphanProviders");
+		ensureMap(doc, "orphanBalances");
+		const node = doc.getIn(["orphanBalances", id]);
+		if (!isNode(node) && node === undefined) throw new Error(`orphanBalances 中不存在 ${id}`);
+		ensureMap(doc, "balances");
+		if (doc.getIn(["balances", id]) !== undefined) throw new Error(`balances 中已存在 ${id}，无法恢复`);
+		doc.setIn(["balances", id], node);
+		doc.deleteIn(["orphanBalances", id]);
+		deleteSectionIfEmpty(doc, "orphanBalances");
 	});
 }
 
@@ -149,3 +186,5 @@ export async function overwriteConfigFile(agentDir: string, text: string, expect
 		renameSync(tempPath, path);
 	});
 }
+
+export { LEGACY_CONFIG_NAME };

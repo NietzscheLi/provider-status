@@ -1,18 +1,19 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import { BalanceService, formatBalance } from "./balance-service.ts";
-import { readConfig, refreshInterval } from "./config.ts";
-import { ensureBaseConfigFile } from "./config-edit.ts";
+import { formatUsageState } from "./render.ts";
+import { UsageService } from "./usage-service.ts";
+import { readConfig, refreshInterval } from "./usage-config.ts";
+import { ensureBaseConfigFile } from "./usage-edit.ts";
 import { getBuiltinProviderIds } from "./builtin.ts";
-import { redactSecrets } from "./config-store.ts";
+import { redactSecrets } from "./usage-store.ts";
 import {
 	modelsPath,
 	reconcileProviders,
 	type ReconcileEvent,
 	type ReconcileReport,
 } from "./reconcile.ts";
-import type { BalanceState } from "./types.ts";
+import type { UsageState } from "./types.ts";
 
 // 与 pi-model-manager `models-change-events.ts` 的广播通道一致；
 // manager 是唯一发布者，这里复制常量以避免跨 package 依赖。
@@ -22,9 +23,9 @@ const FAILURE_BACKOFF_MS = 30_000;
 
 export default function providerStatusExtension(pi: ExtensionAPI): void {
 	const agentDir = getAgentDir();
-	const service = new BalanceService(agentDir);
+	const service = new UsageService(agentDir);
 	const path = modelsPath(agentDir);
-	// 配置缺失时初始化基础文件；失败不阻断扩展加载（读取时有默认值兑底）。
+	// 配置缺失时初始化基础文件（旧 balance-config.yaml 会一次性迁移）；失败不阻断扩展加载。
 	void ensureBaseConfigFile(agentDir).catch(() => undefined);
 	let startedAt: number | undefined;
 	let tps: number | undefined;
@@ -59,7 +60,7 @@ export default function providerStatusExtension(pi: ExtensionAPI): void {
 		if (report.conflicts.length > 0) parts.push(`conflicts: ${report.conflicts.join(", ")}`);
 		if (report.added.length > 0) parts.push(`without balance config: ${report.added.join(", ")}`);
 		if (report.orphan.length > 0) parts.push(`orphan: ${report.orphan.join(", ")}`);
-		return parts.length > 0 ? parts.join("; ") : "balance config in sync";
+		return parts.length > 0 ? parts.join("; ") : "usage config in sync";
 	};
 
 	const runReconcile = (events?: readonly ReconcileEvent[], confirmPrune?: (orphanIds: string[]) => Promise<boolean>) => {
@@ -70,13 +71,13 @@ export default function providerStatusExtension(pi: ExtensionAPI): void {
 			.then((report) => {
 				const ctx = sessionCtx;
 				if (ctx && (report.conflicts.length > 0 || report.renamed.length > 0 || report.added.length > 0 || report.orphan.length > 0)) {
-					notifySafe(ctx, `Provider balance reconcile: ${reportSummary(report)}`, report.conflicts.length > 0 ? "warning" : "info");
+					notifySafe(ctx, `Provider usage reconcile: ${reportSummary(report)}`, report.conflicts.length > 0 ? "warning" : "info");
 				}
 				return report;
 			})
 			.catch((error: unknown) => {
 				const ctx = sessionCtx;
-				if (ctx) notifySafe(ctx, `Provider balance reconcile failed: ${error instanceof Error ? error.message : String(error)}`, "warning");
+				if (ctx) notifySafe(ctx, `Provider usage reconcile failed: ${error instanceof Error ? error.message : String(error)}`, "warning");
 				return undefined;
 			})
 			.finally(() => {
@@ -87,7 +88,17 @@ export default function providerStatusExtension(pi: ExtensionAPI): void {
 
 	const update = (ctx: ExtensionContext) => {
 		try {
-			ctx.ui.setStatus("balance", current ? formatBalance(service.get(current)) : "--");
+			const state: UsageState | undefined = current ? service.get(current) : undefined;
+			const text = state ? formatUsageState(state) : "--";
+			// 订阅型与余额型分键发布，starship 用 [extension_status.icons] 区分图标；
+			// 同一时刻只会有一个键有值。
+			if (current && service.kindOf(current) === "subscription") {
+				ctx.ui.setStatus("quota", text);
+				ctx.ui.setStatus("balance", undefined);
+			} else {
+				ctx.ui.setStatus("balance", text);
+				ctx.ui.setStatus("quota", undefined);
+			}
 			ctx.ui.setStatus("tps", tps === undefined ? "TPS --" : `TPS ${tps.toFixed(1)}`);
 		} catch {
 			// stale ctx 或非 TUI 模式下忽略 UI 失败。
@@ -143,7 +154,10 @@ export default function providerStatusExtension(pi: ExtensionAPI): void {
 		const resolved = await ctx.modelRegistry.getApiKeyAndHeaders(model);
 		// 等待认证解析期间模型已切换或出现了更新的查询：丢弃本次结果。
 		if (controller.signal.aborted || generation !== refreshGeneration || ctx.model !== model) return;
-		const pending = service.refresh(model.provider, { baseUrl: model.baseUrl, apiKey: resolved.ok ? resolved.apiKey : undefined }, force, controller.signal);
+		const source = resolved.ok
+			? { baseUrl: model.baseUrl, apiKey: resolved.apiKey, headers: resolved.headers as Record<string, string> | undefined }
+			: { baseUrl: model.baseUrl };
+		const pending = service.refresh(model.provider, source, force, controller.signal);
 		// 请求进行中就把 refreshing 状态画到状态栏；handler 立即返回，不阻塞 pi。
 		update(ctx);
 		const state = await pending;
@@ -161,28 +175,32 @@ export default function providerStatusExtension(pi: ExtensionAPI): void {
 				if (report) showStatus(ctx);
 			})
 			.catch((error: unknown) => {
-				notifySafe(ctx, `Balance refresh failed: ${error instanceof Error ? error.message : String(error)}`, "warning");
+				notifySafe(ctx, `Usage refresh failed: ${error instanceof Error ? error.message : String(error)}`, "warning");
 			});
 	};
 
-	const showStatus = (ctx: ExtensionContext) => {
-		const state: BalanceState = current ? service.get(current) : { text: "--", loading: false };
-		// 状态栏只显示 unavailable，这里带上具体错误，方便定位配置问题。
-		const detail = state.error ? ` (${state.error})` : "";
-		notifySafe(ctx, `Balance: ${current ?? "no model"} ${formatBalance(state)}${detail}; TPS ${tps === undefined ? "--" : tps.toFixed(1)}`, "info");
+	const describeState = (state: UsageState): string => {
+		const detail = state.value?.kind === "subscription" ? state.value.windows.map((window) => `${window.label} ${Math.round(window.percent)}%`).join(" · ") : state.value?.text;
+		const suffix = state.error ? ` (${state.error})` : "";
+		return `${detail ?? "no data"}${suffix}`;
 	};
 
-	pi.registerCommand("balance", {
-		description: "Show provider balance; `update` force refresh, `config` open TUI editor, `reconcile [--prune]` run identity reconcile",
+	const showStatus = (ctx: ExtensionContext) => {
+		const state: UsageState = current ? service.get(current) : { loading: false };
+		notifySafe(ctx, `Usage: ${current ?? "no model"} ${describeState(state)}; TPS ${tps === undefined ? "--" : tps.toFixed(1)}`, "info");
+	};
+
+	pi.registerCommand("usage", {
+		description: "Show provider usage; `update` force refresh, `config` open TUI editor, `reconcile [--prune]` run identity reconcile",
 		handler: async (args, ctx) => {
 			const trimmed = args.trim().toLowerCase();
 			if (trimmed === "config") {
 				if (!ctx.hasUI) {
-					notifySafe(ctx, "balance config 需要交互式 TUI", "warning");
+					notifySafe(ctx, "usage config 需要交互式 TUI", "warning");
 					return;
 				}
-				const { runBalanceDashboard } = await import("./tui/balance-dashboard.ts");
-				await runBalanceDashboard(ctx, agentDir);
+				const { runUsageDashboard } = await import("./tui/usage-dashboard.ts");
+				await runUsageDashboard(ctx, agentDir);
 				return;
 			}
 			if (trimmed === "update") {
@@ -193,13 +211,13 @@ export default function providerStatusExtension(pi: ExtensionAPI): void {
 			if (trimmed.startsWith("reconcile")) {
 				const prune = /\s--prune\b/.test(trimmed) || trimmed === "--prune";
 				if (prune && !ctx.hasUI) {
-					notifySafe(ctx, "balance reconcile --prune requires an interactive UI for confirmation", "warning");
+					notifySafe(ctx, "usage reconcile --prune requires an interactive UI for confirmation", "warning");
 					return;
 				}
 				const report = await runReconcile(undefined, prune
 					? async (orphanIds) => ctx.ui.confirm("Quarantine orphan balance entries?", orphanIds.join(", "))
 					: undefined);
-				if (report) notifySafe(ctx, `Provider balance reconcile: ${reportSummary(report)}`, report.conflicts.length > 0 ? "warning" : "info");
+				if (report) notifySafe(ctx, `Provider usage reconcile: ${reportSummary(report)}`, report.conflicts.length > 0 ? "warning" : "info");
 				return;
 			}
 			if (trimmed === "" || trimmed === "status") {
@@ -208,7 +226,7 @@ export default function providerStatusExtension(pi: ExtensionAPI): void {
 				showStatus(ctx);
 				return;
 			}
-			notifySafe(ctx, "Unknown subcommand; usage: /balance [update|config|reconcile [--prune]]", "warning");
+			notifySafe(ctx, "Unknown subcommand; usage: /usage [update|config|reconcile [--prune]]", "warning");
 		},
 	});
 
@@ -248,6 +266,7 @@ export default function providerStatusExtension(pi: ExtensionAPI): void {
 		clearRefreshTimer();
 		failureBackoff.clear();
 		ctx.ui.setStatus("balance", undefined);
+		ctx.ui.setStatus("quota", undefined);
 		ctx.ui.setStatus("tps", undefined);
 	});
 }
