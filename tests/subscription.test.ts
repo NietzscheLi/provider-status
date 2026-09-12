@@ -190,6 +190,14 @@ test("fetchSubscriptionUsage：commandcode 先 whoami 再并行 credits/summary"
 	assert.equal(result.windows[0]!.percent, 25);
 });
 
+test("fetchSubscriptionUsage：commandcode 401/403 给出套餐/登录提示", async () => {
+	const fetcher = async () => new Response("unauthorized", { status: 401 });
+	await assert.rejects(
+		fetchSubscriptionUsage({ providerId: "commandcode", adapter: "commandcode", source: { apiKey: "sk" }, entry: {}, fetcher }),
+		/Pro 及以上套餐的 API key/,
+	);
+});
+
 test("UsageService 按配置分派订阅/余额并记录 kind", async () => {
 	const dir = makeDir();
 	writeFileSync(join(dir, "usage-config.yaml"), [

@@ -127,6 +127,12 @@ orphanBalances: {}
 - 凭据默认由 pi 运行时解析（与聊天请求同一套 `models.json`/OAuth），条目内 `credentials` 只用于覆盖特殊情况；
 - **不使用**浏览器 cookie、HTML 抓取、旁路凭据文件或自建 token refresh。
 
+### API 能力与套餐要求
+
+- **Ollama Cloud**：原生 API key 形式（`/login` 选 Ollama Cloud，或 `OLLAMA_API_KEY`），提供 OpenAI 兼容 API；`/api/usage` 用同一把 key，Free 档也可查询。
+- **Command Code**：原生支持 API 调用，但其 **Provider API 仅 Pro 及以上套餐开放**（Go 档无 API，只有 CLI）。凭据可用 `/login commandcode`（OAuth，`pi-commandcode-provider` 的 `oauth.getApiKey` 会自动刷新）或 `COMMAND_CODE_API_KEY`；两者对 `/alpha/*` 用量接口都有效。返回 401/403 时状态栏会提示套餐/登录要求。
+- 两者都**复用 pi 运行时解析的凭据**（与聊天请求同一套）。若未安装对应 provider 包（`pi-ollama-cloud`/`pi-commandcode-provider` 等），`getApiKeyAndHeaders` 拿不到 key，会显示 unavailable。
+
 ## pi-starship 集成
 
 扩展只发布状态项，由 starship 渲染。请在 `~/.pi/agent/pi-starship.toml` 的 `[extension_status.icons]` 中区分图标：

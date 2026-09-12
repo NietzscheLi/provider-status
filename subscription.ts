@@ -321,14 +321,23 @@ export async function fetchSubscriptionUsage(input: SubscriptionFetchInput): Pro
 		case "commandcode": {
 			const origin = originOf(baseUrlFor(input));
 			const auth = { ...headers, Authorization: `Bearer ${token}` };
-			const whoami = objectAt(await requestJson(joinPath(origin, "/alpha/whoami"), { method: "GET", headers: auth }, input), "");
-			const orgId = objectAt(whoami?.org, "id");
-			const query = typeof orgId === "string" && orgId ? `?orgId=${encodeURIComponent(orgId)}` : "";
-			const [credits, summary] = await Promise.all([
-				requestJson(joinPath(origin, `/alpha/billing/credits${query}`), { method: "GET", headers: auth }, input),
-				requestJson(joinPath(origin, `/alpha/usage/summary${query}`), { method: "GET", headers: auth }, input),
-			]);
-			return { windows: parseCommandCodeUsage(credits, summary, nowMs) };
+			try {
+				const whoami = objectAt(await requestJson(joinPath(origin, "/alpha/whoami"), { method: "GET", headers: auth }, input), "");
+				const orgId = objectAt(whoami?.org, "id");
+				const query = typeof orgId === "string" && orgId ? `?orgId=${encodeURIComponent(orgId)}` : "";
+				const [credits, summary] = await Promise.all([
+					requestJson(joinPath(origin, `/alpha/billing/credits${query}`), { method: "GET", headers: auth }, input),
+					requestJson(joinPath(origin, `/alpha/usage/summary${query}`), { method: "GET", headers: auth }, input),
+				]);
+				return { windows: parseCommandCodeUsage(credits, summary, nowMs) };
+			} catch (error) {
+				// Command Code 的用量接口与其 Provider API 同源：需要 Pro 及以上套餐的 API key，
+				// 或 CLI/OAuth 登录（由 pi-commandcode-provider 的 oauth.getApiKey 自动刷新）。
+				if (error instanceof Error && /^HTTP 40[13]$/.test(error.message)) {
+					throw new Error(`${error.message}: Command Code 用量需要 Pro 及以上套餐的 API key，或用 \`/login commandcode\` 登录`);
+				}
+				throw error;
+			}
 		}
 		case "opencode-go": {
 			const json = await requestJson(joinPath(baseUrlFor(input), "/usage"), { method: "GET", headers: { ...headers, Authorization: `Bearer ${token}` } }, input);
