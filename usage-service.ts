@@ -97,7 +97,7 @@ export class UsageService {
 		const maxWidth = Number(entry.maxWidth);
 		return {
 			kind: "subscription",
-			text: renderQuotaText(label, windows, this.now(), Number.isFinite(maxWidth) && maxWidth > 0 ? maxWidth : undefined),
+			text: renderQuotaText(windows, Number.isFinite(maxWidth) && maxWidth > 0 ? maxWidth : undefined),
 			windows,
 		};
 	}

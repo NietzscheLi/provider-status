@@ -123,7 +123,7 @@ orphanBalances: {}
 | `kimi` | `kimi-coding` | `GET api.kimi.com/coding/v1/usages` | Bearer（pi 解析的 kimi-coding 凭据） | 最短 rolling 窗口(300min=5h) + weekly 汇总 |
 
 - `ollama-cloud` 与 `commandcode` **不是 pi 内置 provider**，需先安装对应 provider 包（`pi-ollama-cloud`/`pi-ollama-cloud-provider` 注册 `ollama-cloud`；`pi-commandcode-provider`/`@bacnh85/pi-commandcode` 注册 `commandcode`）；`opencode-go`/`zai`/`zai-coding-cn`/`openai-codex`/`kimi-coding` 是 pi 内置。
-- 条目可覆盖 `label`（短标签）、`request.baseUrl`（区域端点）、`request.timeoutSeconds`（默认 15）、`request.headers`、`maxWidth`（状态栏宽度预算，默认 48）、`credentials`；余额与订阅统一使用 `request.*` / `credentials.*` 命名，TUI 表单与运行时字段一一对应（由 `tests/tui-coverage.test.ts` 守护）；
+- 条目可覆盖 `label`（短标签，用于 TUI 与错误信息，不出现在状态栏文本）、`request.baseUrl`（区域端点）、`request.timeoutSeconds`（默认 15）、`request.headers`、`maxWidth`（状态栏宽度预算，默认 48）、`credentials`；余额与订阅统一使用 `request.*` / `credentials.*` 命名，TUI 表单与运行时字段一一对应（由 `tests/tui-coverage.test.ts` 守护）；
 - 凭据默认由 pi 运行时解析（与聊天请求同一套 `models.json`/OAuth），条目内 `credentials` 只用于覆盖特殊情况；
 - **不使用**浏览器 cookie、HTML 抓取、旁路凭据文件或自建 token refresh。
 
@@ -140,11 +140,11 @@ orphanBalances: {}
 ```toml
 [extension_status.icons]
 balance = "💰"   # 余额型：balance $12.34
-quota   = "📊"   # 订阅型：quota CC 5h 15% ↺2h · mo 3% ↺4d
+quota   = "📊"   # 订阅型：quota 5h 15% · mo 3%
 tps     = "⚡"
 ```
 
-渲染遵循 starship `extension_status` 的约束：不产出尾部 `(...)` 与逗号；超宽时按"保留 reset → 去 reset → 只留 5h"逐级降级。
+状态栏文本只展示窗口与已用百分比（`5h 15% · wk 3% · mo 0%`），不带 provider 前缀和重置倒计时；渲染遵循 starship `extension_status` 的约束，不产出尾部 `(...)` 与逗号，超宽时只保留 5h 窗口。
 
 ## TUI 编辑面板（/usage config）
 

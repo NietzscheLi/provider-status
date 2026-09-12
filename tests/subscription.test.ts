@@ -113,16 +113,13 @@ test("jwtAccountId 从 openai-codex token 的 JWT claim 取 chatgpt_account_id",
 	assert.equal(jwtAccountId("not-a-jwt"), undefined);
 });
 
-test("renderQuotaText 超宽时逐级降级（去 reset → 只留 5h）", () => {
-	const now = Date.parse("2026-01-07T03:00:00.000Z");
+test("renderQuotaText 只展示窗口与百分比，超宽时只留 5h", () => {
 	const windows = [
 		{ label: "5h", percent: 15, resetsAt: "2026-01-07T05:00:00.000Z" },
 		{ label: "mo", percent: 3, resetsAt: "2026-02-01T00:00:00.000Z" },
 	];
-	const full = renderQuotaText("CC", windows, now, 100);
-	assert.match(full, /CC 5h 15% ↺2h · mo 3% ↺25d/);
-	const narrow = renderQuotaText("CC", windows, now, 10);
-	assert.equal(narrow, "CC 5h 15%");
+	assert.equal(renderQuotaText(windows, 100), "5h 15% · mo 3%");
+	assert.equal(renderQuotaText(windows, 10), "5h 15%");
 });
 
 test("suggestAdapter 覆盖常见 provider ID", () => {
@@ -222,7 +219,7 @@ test("UsageService 按配置分派订阅/余额并记录 kind", async () => {
 	assert.equal(relay.value?.text, "7");
 	const subscription = await service.refresh("opencode-go", { apiKey: "sk" });
 	assert.equal(subscription.value?.kind, "subscription");
-	assert.equal(subscription.value?.text, "OG 5h 10%");
+	assert.equal(subscription.value?.text, "5h 10%");
 });
 
 test("旧 balance-config.yaml 一次性迁移到 usage-config.yaml，旧文件保留", async () => {
