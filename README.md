@@ -26,10 +26,13 @@
 | 命令 | 行为 |
 |---|---|
 | `/usage`（或 `/usage status`） | 执行一次 Provider 身份对账、刷新并显示当前用量/TPS |
+| `/usage edit`（别名 `/usage config`） | 打开 TUI 编辑面板（需要交互式 UI） |
 | `/usage update` | 强制刷新当前 provider（忽略缓存间隔） |
-| `/usage config` | 打开 TUI 编辑面板（需要交互式 UI） |
 | `/usage reconcile` | 只执行对账并显示报告，不刷新 |
 | `/usage reconcile --prune` | 对 orphan 余额条目执行隔离前确认，确认后从 `balances` 移入 `orphanBalances`（可恢复） |
+| `/usage help` | 显示可用子命令 |
+
+子命令风格与 `workspace-preset` 的 `/preset` 保持一致：`status` / `edit` / `help` 是通用子命令，其余为各自领域扩展。
 
 ## 配置参考（usage-config.yaml）
 
@@ -146,9 +149,14 @@ tps     = "⚡"
 
 状态栏文本只展示窗口与已用百分比（`5h 15% · wk 3% · mo 0%`），不带 provider 前缀和重置倒计时；渲染遵循 starship `extension_status` 的约束，不产出尾部 `(...)` 与逗号，超宽时只保留 5h 窗口。
 
-## TUI 编辑面板（/usage config）
+## TUI 编辑面板（/usage edit）
 
-列表 + 单键快捷操作：**Enter** 编辑选中条目 / **P** 新建余额配置 / **S** 新建订阅配置 / **n** 新建模板 / **d** 删除 / **y** 原始 YAML / **q** 退出。
+两级导航，每屏只做一件事：
+
+- **主面板**：`余额配置` / `订阅配置` / `余额模板` / `隔离条目`（有隔离时才出现） / `刷新间隔` / `原始 YAML` / `退出`。`↑↓` 选择，**Enter** 进入，`q` / `Esc` 退出；
+- **分类页**：首行 `＋ 新建…`，下面是已配置条目。`↑↓` 选择，**Enter** 打开，`n` 新建，`d` 删除，`Esc` 返回；
+- **条目编辑器**：第一层按 `请求 / 提取 / 有效性 / 凭据 / 绑定模板 / 原始 JSON / 保存` 分节，**Enter** 进入分节后逐字段编辑；**Ctrl+S** 在任意一层保存，`Esc` 逐层返回；
+- 列表顶部一行上下文，按 **?** 打开完整快捷键与字段说明浮层。
 
 - `balances`：为每个 provider 绑定 profile 或覆盖 request/extractor/credentials/validity；键与 provider ID 大小写完全一致；凭据掩码显示，输入 `-` 清除；
 - `subscriptions`：选择 adapter 并覆盖 label/baseUrl/超时/宽度/附加请求头/凭据；

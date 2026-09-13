@@ -1,8 +1,12 @@
 // tui/usage-editor.ts
 //
-// 余额条目编辑器：providers 覆盖配置与 profiles 模板共用同一个表单。
+// 余额条目编辑器：providers 覆盖配置与 profiles 模板共用同一套两级表单。
+//
+//   第一层  请求 / 提取 / 有效性 / 凭据 / 绑定模板 / 原始 JSON / 保存
+//   第二层  选中分节后逐字段编辑；Ctrl+S 在任意一层保存，Esc 逐层返回
+//
 // 草稿就是条目的 JsonObject 树（深拷贝），已知字段就地读写；
-// "原始 JSON" 行用 ctx.ui.editor 兜底覆盖任意未列出的字段。Ctrl+S 保存，Esc 返回。
+// "原始 JSON" 行用 ctx.ui.editor 兜底覆盖任意未列出的字段。
 
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import {
@@ -16,7 +20,7 @@ import {
 } from "../usage-draft.ts";
 import type { JsonObject } from "../types.ts";
 import { editHeaders } from "./kv-editor.ts";
-import { padLabel, showOptionPicker, showPersistentFormMenu, type MenuCursor } from "./persistent-menu.ts";
+import { padLabel, showOptionPicker, showPersistentFormMenu, type MenuCursor, type MenuRow } from "./persistent-menu.ts";
 
 export type EntryEditOutcome =
 	| { action: "save"; entry: JsonObject }
@@ -30,6 +34,46 @@ interface FieldSpec {
 	// 该字段当前是否继承自模板（provider 未覆盖）。
 	inherited?: boolean;
 }
+
+interface BalanceSection {
+	id: string;
+	label: string;
+	fields: readonly string[];
+}
+
+// 分节只影响呈现顺序，字段集合仍以 buildBalanceRows 为准（覆盖率测试据此校验）。
+const BALANCE_SECTIONS: readonly BalanceSection[] = [
+	{ id: "request", label: "请求", fields: ["request.url", "request.baseUrl", "request.method", "request.timeoutSeconds", "request.headers", "request.body"] },
+	{ id: "extractor", label: "提取", fields: ["extractor.remainingPath", "extractor.totalPath", "extractor.usedPath", "extractor.unit", "extractor.unitPath", "extractor.scale", "extractor.errorPath", "extractor.errorFallback"] },
+	{ id: "validity", label: "有效性", fields: ["validity.path", "validity.allTruthy", "validity.firstDefined", "validity.fallback"] },
+	{ id: "credentials", label: "凭据", fields: ["credentials.apiKey", "credentials.accessToken", "credentials.userId"] },
+];
+
+const BALANCE_FIELD_HELP: Record<string, string> = {
+	profile: "绑定模板后，未覆盖的字段自动继承模板；同名字段以本条目为准。",
+	"request.url": "完整请求地址；设置后优先于 baseUrl 拼接的默认端点。",
+	"request.baseUrl": "服务基地址；留空则使用 provider 在 pi 中的后端地址。",
+	"request.method": "HTTP 方法，默认 GET。",
+	"request.timeoutSeconds": "单次查询超时秒数，默认 10。",
+	"request.headers": "请求头；值支持 {{apiKey}} 等占位符插值。",
+	"request.body": "POST 请求体 JSON；对象会做占位符插值。",
+	"extractor.remainingPath": "响应中剩余额度的字段路径；未设置时用 total - used。",
+	"extractor.totalPath": "响应中总额度的字段路径。",
+	"extractor.usedPath": "响应中已用额度的字段路径。",
+	"extractor.unit": "额度单位文案（如 USD、tokens）；未设置时从响应中取。",
+	"extractor.unitPath": "从响应中读取单位的字段路径。",
+	"extractor.scale": "对提取结果乘以的缩放系数，默认 1。",
+	"extractor.errorPath": "响应中错误信息的字段路径。",
+	"extractor.errorFallback": "无法提取错误信息时展示的兜底文案。",
+	"validity.path": "判断凭据是否有效的字段路径。",
+	"validity.allTruthy": "这些路径都为真时视为有效（逗号分隔）。",
+	"validity.firstDefined": "这些路径中任一非空时视为有效（逗号分隔）。",
+	"validity.fallback": "无法判断时的兜底结论（true/false）。",
+	"credentials.apiKey": "条目的 API Key 覆盖；留空则用 pi 运行时解析的凭据。",
+	"credentials.accessToken": "条目的 access token 覆盖；留空则用 pi 运行时解析的凭据。",
+	"credentials.userId": "部分接口需要的用户标识。",
+	raw: "直接编辑整个条目的 JSON，保存后整体替换。",
+};
 
 function textOr(value: unknown, fallback: string): string {
 	return typeof value === "string" && value ? value : value !== undefined && value !== null ? String(value) : fallback;
@@ -111,6 +155,35 @@ function buildBalanceRows(draft: JsonObject, showProfile: boolean, profileNames:
 	row("raw", "原始 JSON", "编辑整个条目");
 	void profileNames;
 	return rows;
+}
+
+/** 分节摘要：用有效值里最有信息量的一项概括该节。 */
+function sectionSummary(sectionId: string, draft: JsonObject, base?: JsonObject): string {
+	const eff = (path: string) => effectiveAt(draft, base, path);
+	switch (sectionId) {
+		case "request":
+			return `${textOr(eff("request.method"), "GET")} · ${textOr(eff("request.url") ?? eff("request.baseUrl"), "<未设置>")}`;
+		case "extractor": {
+			const remaining = textOr(eff("extractor.remainingPath"), "");
+			if (remaining) return `余量 ${remaining}`;
+			const total = textOr(eff("extractor.totalPath"), "");
+			const used = textOr(eff("extractor.usedPath"), "");
+			if (total || used) return `总额 ${total || "—"} · 已用 ${used || "—"}`;
+			return "<未设置>";
+		}
+		case "validity": {
+			const path = textOr(eff("validity.path"), "");
+			if (path) return `路径 ${path}`;
+			if (eff("validity.allTruthy") !== undefined || eff("validity.firstDefined") !== undefined || eff("validity.fallback") !== undefined) return "已配置";
+			return "<未设置>";
+		}
+		case "credentials": {
+			const count = ["credentials.apiKey", "credentials.accessToken", "credentials.userId"].filter((path) => valueAtPath(draft, path) !== undefined && valueAtPath(draft, path) !== "").length;
+			return count > 0 ? `${count} 项已设置` : "<用 pi 运行时凭据>";
+		}
+		default:
+			return "";
+	}
 }
 
 async function editTextField(
@@ -199,6 +272,119 @@ async function editRawEntry(ctx: ExtensionCommandContext, draft: JsonObject): Pr
 	}
 }
 
+/** 分节内的单字段编辑；按 id 分派到对应的输入控件。 */
+async function editBalanceFieldById(
+	ctx: ExtensionCommandContext,
+	rows: readonly FieldSpec[],
+	draft: JsonObject,
+	id: string,
+	base?: JsonObject,
+): Promise<void> {
+	const label = rows.find((row) => row.id === id)?.label ?? id;
+	if (id === "request.method") {
+		const choice = await showOptionPicker(
+			ctx,
+			"请求方法",
+			[
+				{ id: "GET", label: "GET" },
+				{ id: "POST", label: "POST" },
+			],
+			textOr(effectiveAt(draft, base, "request.method"), "GET"),
+		);
+		if (choice) setValueAtPath(draft, "request.method", choice.id);
+		return;
+	}
+	if (id === "request.headers") {
+		// 预填合并后的请求头；仅当改动过才写回，避免“打开即 Esc”把继承值固化成覆盖。
+		const initial = headersToPairs(effectiveAt(draft, base, "request.headers"));
+		const result = await editHeaders(ctx, "请求头", initial);
+		if (result.type === "done") {
+			const next = result.pairs.length > 0 ? Object.fromEntries(result.pairs.map((pair) => [pair.key, pair.value])) : "";
+			if (stableStringify(result.pairs) === stableStringify(initial)) return;
+			setValueAtPath(draft, "request.headers", next);
+		}
+		return;
+	}
+	if (id === "request.body") {
+		await editBody(ctx, draft, base);
+		return;
+	}
+	if (id.startsWith("credentials.")) {
+		await editSecretField(ctx, draft, id, id.slice("credentials.".length));
+		return;
+	}
+	if (id === "validity.allTruthy" || id === "validity.firstDefined") {
+		await editStringListField(ctx, draft, id, label, base);
+		return;
+	}
+	if (id === "validity.fallback") {
+		await editFallbackField(ctx, draft, base);
+		return;
+	}
+	if (id === "request.timeoutSeconds" || id === "extractor.scale") {
+		const current = effectiveAt(draft, base, id);
+		const fallback = id === "request.timeoutSeconds" ? "10" : "<未设置>";
+		const value = await ctx.ui.input(`${label}（当前：${textOr(current, fallback)}，留空清除）`, textOr(current, ""));
+		if (value === undefined) return;
+		const parsed = parseNumberInput(value);
+		if (parsed === null) {
+			void ctx.ui.notify("需要数字", "warning");
+			return;
+		}
+		setValueAtPath(draft, id, parsed);
+		return;
+	}
+	await editTextField(ctx, draft, id, label, base);
+}
+
+/** 分节的字段列表：Enter 编辑字段，Ctrl+S 保存，Esc 返回上一层。 */
+async function editBalanceSection(
+	ctx: ExtensionCommandContext,
+	title: string,
+	section: BalanceSection,
+	draft: JsonObject,
+	options: { showProfile: boolean; profileNames: readonly string[]; base?: JsonObject },
+): Promise<"back" | "save"> {
+	const cursor: MenuCursor = { index: 0 };
+	while (true) {
+		const allRows = buildBalanceRows(draft, options.showProfile, options.profileNames, options.base);
+		const rows: MenuRow[] = allRows
+			.filter((spec) => section.fields.includes(spec.id))
+			.map((spec) => ({ id: spec.id, label: `${padLabel(spec.label, 16)}${spec.value}`, searchText: `${spec.label}\n${spec.value}` }));
+		const action = await showPersistentFormMenu(ctx, `${title} › ${section.label}`, "", rows, cursor, {
+			getContext: () => "Ctrl+S 保存 · Esc 返回",
+			getDetailLines: (row) => {
+				const help = row ? BALANCE_FIELD_HELP[row.id] : undefined;
+				return help ? [`  ${help}`] : [];
+			},
+			hints: [
+				{ key: "↑↓", label: "选择" },
+				{ key: "Enter", label: "编辑" },
+				{ key: "Ctrl+S", label: "保存" },
+				{ key: "Esc", label: "返回" },
+			],
+			helpLines: ["（继承）表示未覆盖、当前取自绑定模板；provider 同名字段覆盖模板。"],
+		});
+		if (action.type === "cancel") return "back";
+		if (action.type === "save") return "save";
+		await editBalanceFieldById(ctx, allRows, draft, action.id, options.base);
+	}
+}
+
+function buildSectionRows(draft: JsonObject, options: { showProfile: boolean; profileNames: readonly string[]; base?: JsonObject }): MenuRow[] {
+	const profileValue = typeof draft.profile === "string" ? draft.profile : isRecord(draft.profile) ? "(内联模板)" : "<不使用模板>";
+	return [
+		...BALANCE_SECTIONS.map((section) => ({
+			id: section.id,
+			label: `${padLabel(section.label, 14)}${sectionSummary(section.id, draft, options.base)}`,
+			searchText: `${section.label} ${section.fields.join(" ")}`,
+		})),
+		...(options.showProfile ? [{ id: "profile", label: `${padLabel("绑定模板", 14)}${profileValue}`, searchText: "绑定模板 profile" }] : []),
+		{ id: "raw", label: `${padLabel("原始 JSON", 14)}编辑整个条目`, searchText: "原始 JSON raw" },
+		{ id: "save", label: `${padLabel("保存", 14)}写入 usage-config.yaml`, searchText: "保存 save" },
+	];
+}
+
 /**
  * 编辑一个余额条目草稿；draft 会被就地修改。
  * showProfile 为 true 时（providers 条目）出现"绑定模板"行；
@@ -210,28 +396,36 @@ export async function editBalanceEntry(
 	draft: JsonObject,
 	options: { showProfile: boolean; profileNames: readonly string[]; builtinOnlyProfileNames?: readonly string[]; base?: JsonObject },
 ): Promise<EntryEditOutcome> {
-	const base = options.base;
 	const cursor: MenuCursor = { index: 0 };
 	while (true) {
-		const rows = buildBalanceRows(draft, options.showProfile, options.profileNames, base);
-		const menuRows = rows.map((row) => ({ id: row.id, label: `${padLabel(row.label, 16)}${row.value}`, searchText: `${row.label}\n${row.value}` }));
-		const action = await showPersistentFormMenu(ctx, title, "", menuRows, cursor, {
-			getSummaryLines: () => [
-				`URL ${textOr(effectiveAt(draft, base, "request.url"), "—")} · 模板 ${textOr(draft.profile, options.showProfile ? "<无>" : "n/a")}`,
-				"表单预填 profile -> provider 合并后的有效值，（继承）表示未覆盖；provider 同名字段覆盖模板",
-				"Ctrl+S 保存到 usage-config.yaml；Esc 返回列表",
-			],
+		const rows = buildSectionRows(draft, options);
+		const allRows = buildBalanceRows(draft, options.showProfile, options.profileNames, options.base);
+		const action = await showPersistentFormMenu(ctx, title, "", rows, cursor, {
+			getContext: () => "Ctrl+S 保存 · Esc 返回",
+			getDetailLines: (row) => {
+				if (row?.id === "profile") return ["  绑定模板后，未覆盖的字段自动继承模板；同名字段以本条目为准。"];
+				if (row?.id === "raw") return ["  直接编辑整个条目的 JSON，保存后整体替换。"];
+				if (row?.id === "save") return ["  写入 usage-config.yaml；外部并发修改会被指纹校验拦下。"];
+				const section = BALANCE_SECTIONS.find((candidate) => candidate.id === row?.id);
+				if (!section) return [];
+				const labels = section.fields.map((field) => allRows.find((spec) => spec.id === field)?.label ?? field);
+				return [`  包含：${labels.join("、")}`];
+			},
 			hints: [
 				{ key: "↑↓", label: "选择" },
-				{ key: "Enter", label: "编辑" },
+				{ key: "Enter", label: "进入" },
 				{ key: "Ctrl+S", label: "保存" },
 				{ key: "Esc", label: "返回" },
 			],
+			helpLines: [
+				"分节进入后逐字段编辑；Ctrl+S 在任意一层都能保存。",
+				"表单预填 profile -> provider 合并后的有效值，（继承）表示未覆盖。",
+				"留空通常表示清除覆盖、恢复继承；凭据留空则保持原值（输入 - 清除）。",
+			],
 		});
 		if (action.type === "cancel") return { action: "cancel" };
-		if (action.type === "save") return { action: "save", entry: draft };
-		const id = action.id;
-		if (id === "profile") {
+		if (action.type === "save" || action.id === "save") return { action: "save", entry: draft };
+		if (action.id === "profile") {
 			const choices = [
 				{ id: "", label: "<不使用模板>" },
 				...options.profileNames.map((name) => ({
@@ -243,60 +437,14 @@ export async function editBalanceEntry(
 			if (choice) setValueAtPath(draft, "profile", choice.id);
 			continue;
 		}
-		if (id === "request.method") {
-			const choice = await showOptionPicker(
-				ctx,
-				"请求方法",
-				[
-					{ id: "GET", label: "GET" },
-					{ id: "POST", label: "POST" },
-				],
-				textOr(effectiveAt(draft, base, "request.method"), "GET"),
-			);
-			if (choice) setValueAtPath(draft, "request.method", choice.id);
-			continue;
-		}
-		if (id === "request.headers") {
-			// 预填合并后的请求头；运行时按整体替换合并，保存写回完整集合语义不变。
-			const result = await editHeaders(ctx, "请求头", headersToPairs(effectiveAt(draft, base, "request.headers")));
-			if (result.type === "done") setValueAtPath(draft, "request.headers", result.pairs.length > 0 ? Object.fromEntries(result.pairs.map((pair) => [pair.key, pair.value])) : "");
-			continue;
-		}
-		if (id === "request.body") {
-			await editBody(ctx, draft, base);
-			continue;
-		}
-		if (id === "raw") {
+		if (action.id === "raw") {
 			await editRawEntry(ctx, draft);
 			continue;
 		}
-		if (id.startsWith("credentials.")) {
-			await editSecretField(ctx, draft, id, id.slice("credentials.".length));
-			continue;
-		}
-		if (id === "validity.allTruthy" || id === "validity.firstDefined") {
-			await editStringListField(ctx, draft, id, rows.find((row) => row.id === id)!.label, base);
-			continue;
-		}
-		if (id === "validity.fallback") {
-			await editFallbackField(ctx, draft, base);
-			continue;
-		}
-		if (id === "request.timeoutSeconds" || id === "extractor.scale") {
-			const current = effectiveAt(draft, base, id);
-			const fallback = id === "request.timeoutSeconds" ? "10" : "<未设置>";
-			const value = await ctx.ui.input(`${rows.find((row) => row.id === id)!.label}（当前：${textOr(current, fallback)}，留空清除）`, textOr(current, ""));
-			if (value === undefined) continue;
-			const parsed = parseNumberInput(value);
-			if (parsed === null) {
-				void ctx.ui.notify("需要数字", "warning");
-				continue;
-			}
-			setValueAtPath(draft, id, parsed);
-			continue;
-		}
-		const spec = rows.find((row) => row.id === id);
-		if (spec) await editTextField(ctx, draft, id, spec.label, base);
+		const section = BALANCE_SECTIONS.find((candidate) => candidate.id === action.id);
+		if (!section) continue;
+		const result = await editBalanceSection(ctx, title, section, draft, options);
+		if (result === "save") return { action: "save", entry: draft };
 	}
 }
 

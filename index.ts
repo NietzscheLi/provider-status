@@ -191,27 +191,36 @@ export default function providerStatusExtension(pi: ExtensionAPI): void {
 	};
 
 	pi.registerCommand("usage", {
-		description: "Show provider usage; `update` force refresh, `config` open TUI editor, `reconcile [--prune]` run identity reconcile",
+		description: "Provider usage status; subcommands: status (default), edit (TUI), update, reconcile [--prune], help",
 		handler: async (args, ctx) => {
-			const trimmed = args.trim().toLowerCase();
-			if (trimmed === "config") {
+			// 子命令风格与 workspace-preset 对齐：status / edit / help + 领域扩展命令。
+			const USAGE = "usage: /usage [status | edit | update | reconcile [--prune]]";
+			const tokens = args.trim().split(/\s+/).filter(Boolean);
+			const command = (tokens[0] ?? "").toLowerCase();
+			if (command === "" || command === "status") {
+				void runReconcile();
+				refreshInBackground(ctx, false, false);
+				showStatus(ctx);
+				return;
+			}
+			if (command === "edit" || command === "config") {
 				if (!ctx.hasUI) {
-					notifySafe(ctx, "usage config 需要交互式 TUI", "warning");
+					notifySafe(ctx, `/usage ${command} 需要交互式 TUI`, "warning");
 					return;
 				}
 				const { runUsageDashboard } = await import("./tui/usage-dashboard.ts");
 				await runUsageDashboard(ctx, agentDir);
 				return;
 			}
-			if (trimmed === "update") {
+			if (command === "update") {
 				showStatus(ctx);
 				refreshInBackground(ctx, true, true);
 				return;
 			}
-			if (trimmed.startsWith("reconcile")) {
-				const prune = /\s--prune\b/.test(trimmed) || trimmed === "--prune";
+			if (command === "reconcile") {
+				const prune = tokens.includes("--prune");
 				if (prune && !ctx.hasUI) {
-					notifySafe(ctx, "usage reconcile --prune requires an interactive UI for confirmation", "warning");
+					notifySafe(ctx, "/usage reconcile --prune 需要交互式 TUI 进行确认", "warning");
 					return;
 				}
 				const report = await runReconcile(undefined, prune
@@ -220,13 +229,11 @@ export default function providerStatusExtension(pi: ExtensionAPI): void {
 				if (report) notifySafe(ctx, `Provider usage reconcile: ${reportSummary(report)}`, report.conflicts.length > 0 ? "warning" : "info");
 				return;
 			}
-			if (trimmed === "" || trimmed === "status") {
-				void runReconcile();
-				refreshInBackground(ctx, false, false);
-				showStatus(ctx);
+			if (command === "help") {
+				notifySafe(ctx, USAGE, "info");
 				return;
 			}
-			notifySafe(ctx, "Unknown subcommand; usage: /usage [update|config|reconcile [--prune]]", "warning");
+			notifySafe(ctx, `未知子命令；${USAGE}`, "warning");
 		},
 	});
 

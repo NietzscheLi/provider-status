@@ -1,15 +1,16 @@
 // tui/kv-editor.ts
 //
 // request.headers 等字符串键值对编辑器：Enter/n 编辑或新增，d 删除，Esc 完成返回。
+// Esc 表示"完成"：返回当前列表由调用方写回草稿（空 key 行会被过滤）。
 
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { findPairIndex, type HeaderPair } from "../usage-draft.ts";
 import { padLabel, showPersistentShortcutMenu, type MenuCursor } from "./persistent-menu.ts";
 
 export type KvEditorResult = { type: "done"; pairs: HeaderPair[] } | { type: "cancel" };
+
 /**
  * 打开键值对编辑器；返回 done 时携带编辑后的列表（空 key 行已过滤）。
- * cancel 表示用户放弃了整次编辑，调用方应保留原值。
  */
 export async function editHeaders(
 	ctx: ExtensionCommandContext,
@@ -17,7 +18,6 @@ export async function editHeaders(
 	initial: readonly HeaderPair[],
 ): Promise<KvEditorResult> {
 	let pairs: HeaderPair[] = [...initial];
-	// [喵喵喵]: 起始光标定位到传入的第一行，方便"改一个 header 就走"的路径。
 	const cursor: MenuCursor = { index: 0 };
 	while (true) {
 		const rows = pairs.map((pair, index) => ({
@@ -36,17 +36,19 @@ export async function editHeaders(
 				{ input: "d", shortcut: "delete" },
 			],
 			{
+				getContext: () => `${pairs.length} 项 · Esc 完成并写回`,
 				emptyLabel: "暂无 header",
 				hints: [
 					{ key: "↑↓", label: "选择" },
-					{ key: "Enter", label: "编辑值" },
-					{ key: "n", label: "新增" },
+					{ key: "Enter", label: "编辑" },
+					{ key: "n", label: "新建" },
 					{ key: "d", label: "删除" },
 					{ key: "Esc", label: "完成" },
 				],
+				helpLines: ["值支持 {{apiKey}} 等占位符插值。", "Esc 完成并返回编辑结果；空 key 的行会被丢弃。"],
 			},
 		);
-		if (action.type === "cancel") return { type: "cancel" };
+		if (action.type === "cancel") return { type: "done", pairs: pairs.filter((pair) => pair.key.trim()) };
 		if (action.type === "shortcut" && action.shortcut === "new") {
 			const key = await ctx.ui.input("Header 名称（如 Authorization）", "");
 			if (key === undefined) continue;
@@ -63,7 +65,7 @@ export async function editHeaders(
 			continue;
 		}
 		if (action.type === "shortcut" && action.shortcut === "delete") {
-			const index = Number(action.id);
+			const index = Number(rows[cursor.index]?.id ?? -1);
 			const pair = pairs[index];
 			if (!pair) continue;
 			const confirmed = await ctx.ui.confirm("删除 header", `${pair.key}: ${pair.value || "<空>"}`);
@@ -74,6 +76,7 @@ export async function editHeaders(
 			continue;
 		}
 		// Enter：编辑选中项的 key 与 value。
+		if (action.type !== "pick") continue;
 		const index = Number(action.id);
 		const pair = pairs[index];
 		if (!pair) continue;
