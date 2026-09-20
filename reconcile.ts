@@ -89,6 +89,8 @@ export async function reconcileProviders(agentDir: string, path: string, options
 		const isOrphan = (id: string): boolean => !modelIds.has(id) && !builtinIds.has(id);
 		const before = configFingerprint(agentDir);
 		const current = readConfig(agentDir);
+		// 订阅型 provider 由内置适配器驱动，不配置余额，也不应计入 added。
+		const subscriptionIds = new Set(Object.keys(current.subscriptions ?? {}));
 		const balances: Record<string, JsonObject> = {};
 		for (const [id, value] of Object.entries(current.balances ?? {})) {
 			const record = providerRecord(value);
@@ -106,7 +108,7 @@ export async function reconcileProviders(agentDir: string, path: string, options
 		if (conflicts.length > 0) {
 			const ids = balanceIds();
 			return {
-				added: [...modelIds].filter((id) => !ids.has(id)),
+				added: [...modelIds].filter((id) => !ids.has(id) && !subscriptionIds.has(id)),
 				existing: [...modelIds].filter((id) => ids.has(id)),
 				orphan: [...ids].filter(isOrphan),
 				renamed: [],
@@ -156,7 +158,7 @@ export async function reconcileProviders(agentDir: string, path: string, options
 
 		const finalIds = balanceIds();
 		return {
-			added: [...modelIds].filter((id) => !finalIds.has(id)),
+			added: [...modelIds].filter((id) => !finalIds.has(id) && !subscriptionIds.has(id)),
 			existing: [...modelIds].filter((id) => finalIds.has(id)),
 			orphan: [...finalIds].filter(isOrphan),
 			renamed,

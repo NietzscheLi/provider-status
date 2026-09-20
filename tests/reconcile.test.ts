@@ -99,6 +99,14 @@ test("provider-delete 事件不删除 balance 配置，等待人工确认", asyn
 	assert.ok((config.balances as Record<string, unknown>).old);
 });
 
+test("订阅型 provider 不计入 without balance config", async () => {
+	const dir = makeDir();
+	const models = seed(dir, "subscriptions:\n  commandcode:\n    adapter: commandcode\n", ["commandcode", "other"]);
+	const report = await reconcileProviders(dir, models);
+	assert.deepEqual(report.added, ["other"]);
+	assert.deepEqual(report.orphan, []);
+});
+
 test("pi 内置 provider（如 openrouter）配置后不算 orphan", async () => {
 	const dir = makeDir();
 	const models = seed(dir, "balances:\n  openrouter: {}\n", []);
