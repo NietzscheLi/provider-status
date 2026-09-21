@@ -1,13 +1,23 @@
 # pi-provider-status
 
-官方 Pi 普通扩展：在状态栏显示当前 provider 的**订阅额度窗口**与**账户余额**，以及生成速度（TPS），是 `usage-config.yaml` 的唯一所有者。负责用量查询运行时、缓存与定时刷新、TPS 统计，以及 provider 身份对账。
+官方 Pi 普通扩展：在状态栏显示当前 provider 的**订阅额度窗口**与**账户余额**，以及生成速度（tok/s）；同时是 `~/.pi/agent/usage-config.yaml` 的唯一所有者，负责用量查询运行时、缓存与定时刷新，以及与 models.json 的 provider 身份对账。
+
+## 状态栏输出
+
+按类型分键发布，同一时刻只有 `balance` / `quota` 其中一个有值：
+
+| 键 | 内容 | 示例 |
+|---|---|---|
+| `balance` | 余额型文案，前缀 md-cash 图标（Nerd Fonts v3 `U+F0114`） | `󰄔 $6.53` |
+| `quota` | 订阅型窗口文案，只带窗口与已用百分比 | `5h 2% · wk 1% · mo 0%` |
+| `tps` | 生成速度：上一轮的输出 token ÷ 该轮耗时；数字在前、单位在后，不带图标 | `42.7 tok/s` |
+
+`tps` 是**每轮瞬时值**，在 `turn_end` 时按 `message.usage.output / (now - turn_start)` 计算，没有新回合时会一直停在最后一轮的数字，未产生过速度时显示 `-- tok/s`。`session_shutdown` 时三个键都会被清除；`/usage status` 的提示里显示同一份 `tok/s` 文案。
 
 两类数据分开建模：
 
 - **余额型（balance）**：任意 HTTP 接口 + JSON 路径提取，适合 OpenRouter、Sub2API/NewAPI 中转、DeepSeek 等；
-- **订阅型（subscription）**：内置适配器解析 5h/周/月 额度窗口，先支持 Ollama、CommandCode、OpenCode Go、GLM、ChatGPT/Codex、Kimi。
-
-状态栏按类型分键发布，便于 [pi-starship](https://pi.dev/packages/@narumitw/pi-starship) 用图标区分：余额型写 `balance`（💰），订阅型写 `quota`（📊），另有 `tps`（⚡）。同一时刻只有一个数据键有值。
+- **订阅型（subscription）**：内置适配器解析 5h/周/月 额度窗口，支持 Ollama、CommandCode、OpenCode Go、GLM、ChatGPT/Codex、Kimi。
 
 ## 相关文件
 
@@ -16,6 +26,7 @@
 | `~/.pi/agent/usage-config.yaml` | 唯一的用户配置：刷新间隔、`templates` 模板、`balances`、`subscriptions` |
 | `~/.pi/agent/usage-config.lock` | 写入互斥锁（容忍 30s 内的 stale lock），跨进程保护读-改-写 |
 | `~/.pi/agent/provider-usage-map.json` | Provider 重命名时的 alias 记录（对账产物，无 secret） |
+| `~/.pi/agent/provider-balance-map.json` | **旧文件**：alias 记录的旧名，作为读取兜底 |
 | `~/.pi/agent/balance-config.yaml` | **旧文件**：首次启动自动迁移为 `usage-config.yaml`，旧文件保留不删 |
 | `~/.pi/agent/models.json` | 只读引用：Provider 列表来自这里（pi 内置 provider 单独从内置 catalog 读取） |
 
@@ -25,7 +36,7 @@
 
 | 命令 | 行为 |
 |---|---|
-| `/usage`（或 `/usage status`） | 执行一次 Provider 身份对账、刷新并显示当前用量/TPS |
+| `/usage`（或 `/usage status`） | 执行一次 Provider 身份对账、刷新并显示当前用量与 tok/s |
 | `/usage config`（别名 `/usage edit`） | 打开 TUI 编辑面板（需要交互式 UI） |
 | `/usage update` | 强制刷新当前 provider（忽略缓存间隔） |
 | `/usage reconcile` | 只执行对账并显示报告，不刷新 |
@@ -123,7 +134,7 @@ orphans: {}
 | `ollama` | `ollama-cloud` | `GET ollama.com/api/usage` | models.json `apiKey` | `limits.session`(5h)/`limits.weekly`（0-1 小数；接口不返回 reset，按 5h/周一 UTC 网格推算） |
 | `commandcode` | `commandcode` | `GET /alpha/whoami` → `/alpha/billing/credits` + `/alpha/usage/summary` | Bearer API key | `windowLimits.fiveHour`/`weekly` + 月度 `spent/total` |
 | `opencode-go` | `opencode-go` | `GET opencode.ai/zen/go/v1/usage` | Bearer API key | `usage.rolling`(5h)/`weekly`/`monthly` + `resetsAt` |
-| `glm` | `zai`（全球）/ `zai-coding-cn`（中国） | `GET {api.z.ai\|open.bigmodel.cn}/api/monitor/usage/quota/limit` | API key（先裸 key，401 再 Bearer） | `data.limits[]` TOKENS_LIMIT：unit 3=小时/6=周 + `nextResetTime` |
+| `glm` | `zai`（全球）/ `zai-coding-cn`、`bigmodel-cn`（中国） | `GET {api.z.ai\|open.bigmodel.cn}/api/monitor/usage/quota/limit` | API key（先裸 key，401 再 Bearer） | `data.limits[]` TOKENS_LIMIT：unit 3=小时/6=周 + `nextResetTime` |
 | `chatgpt` | `openai-codex` | `GET chatgpt.com/backend-api/wham/usage` | pi 运行时解析的 OAuth access token + `chatgpt-account-id`（从 JWT claim 读取） | `rate_limit.primary/secondary` |
 | `kimi` | `kimi-coding` | `GET api.kimi.com/coding/v1/usages` | Bearer（pi 解析的 kimi-coding 凭据） | 最短 rolling 窗口(300min=5h) + weekly 汇总 |
 
@@ -138,18 +149,9 @@ orphans: {}
 - **Command Code**：原生支持 API 调用，但其 **Provider API 仅 Pro 及以上套餐开放**（Go 档无 API，只有 CLI）。凭据可用 `/login commandcode`（OAuth，`pi-commandcode-provider` 的 `oauth.getApiKey` 会自动刷新）或 `COMMAND_CODE_API_KEY`；两者对 `/alpha/*` 用量接口都有效。返回 401/403 时状态栏会提示套餐/登录要求。
 - 两者都**复用 pi 运行时解析的凭据**（与聊天请求同一套）。若未安装对应 provider 包（`pi-ollama-cloud`/`pi-commandcode-provider` 等），`getApiKeyAndHeaders` 拿不到 key，会显示 unavailable。
 
-## pi-starship 集成
+## 状态栏文本渲染
 
-扩展只发布状态项，由 starship 渲染。请在 `~/.pi/agent/pi-starship.toml` 的 `[extension_status.icons]` 中区分图标：
-
-```toml
-[extension_status.icons]
-balance = "💰"   # 余额型：balance $12.34
-quota   = "📊"   # 订阅型：quota 5h 15% · mo 3%
-tps     = "⚡"
-```
-
-状态栏文本只展示窗口与已用百分比（`5h 15% · wk 3% · mo 0%`），不带 provider 前缀和重置倒计时；渲染遵循 starship `extension_status` 的约束，不产出尾部 `(...)` 与逗号，超宽时只保留 5h 窗口。
+订阅型文本只展示窗口与已用百分比（`5h 15% · wk 3% · mo 0%`），不带 provider 前缀和重置倒计时；该文本中不出现逗号与尾部 `(...)`，超宽（默认 48 可见字符，可用 `maxWidth` 覆盖）时只保留 5h 窗口。余额型文本是提取器的输出（可带 `unit`），统一加 md-cash 前缀图标；生成速度文本为数字在前、单位在后且不带图标。
 
 ## TUI 编辑面板（/usage config）
 
@@ -178,7 +180,7 @@ tps     = "⚡"
 - Provider 重命名：消费 `pi-model-manager` 广播的 `pi-model-manager:models-changed`（`provider-rename`），在锁内迁移余额 key 并记录 alias 到 `provider-usage-map.json`；
 - 订阅条目以 provider ID 为键、由内置适配器驱动，不参与隔离。
 
-## 查询运行时（参照 pi-usage）
+## 查询运行时
 
 - **不阻塞 pi**：网络请求全部后台异步，命令 handler 与事件回调绝不 `await`；
 - **缓存优先**：缓存新鲜时直接渲染，不解析认证、不发请求；
