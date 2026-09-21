@@ -24,7 +24,7 @@ function readConfig(dir: string): UsageConfig {
 
 test("显式 rename 事件迁移 balance key 并记录 alias，重复对账幂等", async () => {
 	const dir = makeDir();
-	const models = seed(dir, "balances:\n  old:\n    profile: newapi\n", ["new"]);
+	const models = seed(dir, "balances:\n  old:\n    template: newapi\n", ["new"]);
 	const first = await reconcileProviders(dir, models, { events: [{ type: "provider-rename", oldId: "old", newId: "new" }] });
 	assert.deepEqual(first.renamed, [{ from: "old", to: "new" }]);
 	assert.equal(first.changed, true);
@@ -37,7 +37,7 @@ test("显式 rename 事件迁移 balance key 并记录 alias，重复对账幂�
 
 test("rename 冲突（newId 已有余额配置）停止自动写入且不改文件", async () => {
 	const dir = makeDir();
-	const models = seed(dir, "balances:\n  old: {}\n  fresh:\n    profile: openrouter\n", ["fresh"]);
+	const models = seed(dir, "balances:\n  old: {}\n  fresh:\n    template: openrouter\n", ["fresh"]);
 	const before = readFileSync(join(dir, "usage-config.yaml"), "utf8");
 	const report = await reconcileProviders(dir, models, { events: [{ type: "provider-rename", oldId: "old", newId: "fresh" }] });
 	assert.deepEqual(report.conflicts, ["fresh"]);
@@ -45,9 +45,9 @@ test("rename 冲突（newId 已有余额配置）停止自动写入且不改文�
 	assert.equal(readFileSync(join(dir, "usage-config.yaml"), "utf8"), before);
 });
 
-test("删除的 Provider 默认保留为 orphan，确认后隔离进 orphanBalances 且可恢复", async () => {
+test("删除的 Provider 默认保留为 orphan，确认后隔离进 orphans 且可恢复", async () => {
 	const dir = makeDir();
-	const models = seed(dir, "balances:\n  gone:\n    profile: newapi\n  stay: {}\n", ["stay"]);
+	const models = seed(dir, "balances:\n  gone:\n    template: newapi\n  stay: {}\n", ["stay"]);
 	const kept = await reconcileProviders(dir, models);
 	assert.deepEqual(kept.orphan, ["gone"]);
 	assert.equal(kept.changed, false);
@@ -56,8 +56,8 @@ test("删除的 Provider 默认保留为 orphan，确认后隔离进 orphanBalan
 	assert.deepEqual(pruned.quarantined, ["gone"]);
 	const config = readConfig(dir);
 	assert.equal((config.balances as Record<string, unknown>).gone, undefined);
-	const quarantined = (config.orphanBalances as Record<string, { profile?: string }>).gone;
-	assert.equal(quarantined.profile, "newapi");
+	const quarantined = (config.orphans as Record<string, { template?: string }>).gone;
+	assert.equal(quarantined.template, "newapi");
 
 	const again = await reconcileProviders(dir, models, { confirmPrune: async () => true });
 	assert.deepEqual(again.quarantined, []);
@@ -86,7 +86,7 @@ test("prune 确认回调期间外部修改配置时，对账拒绝写入且文�
 	const config = readConfig(dir);
 	assert.ok((config.balances as Record<string, unknown>).gone);
 	assert.ok((config.balances as Record<string, unknown>).manual);
-	assert.equal(config.orphanBalances, undefined);
+	assert.equal(config.orphans, undefined);
 });
 
 test("provider-delete 事件不删除 balance 配置，等待人工确认", async () => {

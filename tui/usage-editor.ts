@@ -1,6 +1,6 @@
 // tui/usage-editor.ts
 //
-// 余额条目编辑器：providers 覆盖配置与 profiles 模板共用同一套两级表单。
+// 余额条目编辑器：balances 覆盖配置与 templates 模板共用同一套两级表单。
 //
 //   第一层  请求 / 提取 / 有效性 / 凭据 / 绑定模板 / 原始 JSON / 保存
 //   第二层  选中分节后逐字段编辑；Ctrl+S 在任意一层保存，Esc 逐层返回
@@ -38,19 +38,21 @@ interface FieldSpec {
 interface BalanceSection {
 	id: string;
 	label: string;
+	// 该分节对应的配置键前缀；帮助浮层里用它把中文标签映射回 YAML 键。
+	keyPrefix: string;
 	fields: readonly string[];
 }
 
 // 分节只影响呈现顺序，字段集合仍以 buildBalanceRows 为准（覆盖率测试据此校验）。
 const BALANCE_SECTIONS: readonly BalanceSection[] = [
-	{ id: "request", label: "请求", fields: ["request.url", "request.baseUrl", "request.method", "request.timeoutSeconds", "request.headers", "request.body"] },
-	{ id: "extractor", label: "提取", fields: ["extractor.remainingPath", "extractor.totalPath", "extractor.usedPath", "extractor.unit", "extractor.unitPath", "extractor.scale", "extractor.errorPath", "extractor.errorFallback"] },
-	{ id: "validity", label: "有效性", fields: ["validity.path", "validity.allTruthy", "validity.firstDefined", "validity.fallback"] },
-	{ id: "credentials", label: "凭据", fields: ["credentials.apiKey", "credentials.accessToken", "credentials.userId"] },
+	{ id: "request", label: "请求", keyPrefix: "request.*", fields: ["request.url", "request.baseUrl", "request.method", "request.timeoutSeconds", "request.headers", "request.body"] },
+	{ id: "extractor", label: "提取", keyPrefix: "extractor.*", fields: ["extractor.remainingPath", "extractor.totalPath", "extractor.usedPath", "extractor.unit", "extractor.unitPath", "extractor.scale", "extractor.errorPath", "extractor.errorFallback"] },
+	{ id: "validity", label: "有效性", keyPrefix: "extractor.validity.*", fields: ["extractor.validity.path", "extractor.validity.allTruthy", "extractor.validity.firstDefined", "extractor.validity.fallback"] },
+	{ id: "credentials", label: "凭据", keyPrefix: "credentials.*", fields: ["credentials.apiKey", "credentials.accessToken", "credentials.userId"] },
 ];
 
 const BALANCE_FIELD_HELP: Record<string, string> = {
-	profile: "绑定模板后，未覆盖的字段自动继承模板；同名字段以本条目为准。",
+	template: "绑定模板后，未覆盖的字段自动继承模板；同名字段以本条目为准。",
 	"request.url": "完整请求地址；设置后优先于 baseUrl 拼接的默认端点。",
 	"request.baseUrl": "服务基地址；留空则使用 provider 在 pi 中的后端地址。",
 	"request.method": "HTTP 方法，默认 GET。",
@@ -65,10 +67,10 @@ const BALANCE_FIELD_HELP: Record<string, string> = {
 	"extractor.scale": "对提取结果乘以的缩放系数，默认 1。",
 	"extractor.errorPath": "响应中错误信息的字段路径。",
 	"extractor.errorFallback": "无法提取错误信息时展示的兜底文案。",
-	"validity.path": "判断凭据是否有效的字段路径。",
-	"validity.allTruthy": "这些路径都为真时视为有效（逗号分隔）。",
-	"validity.firstDefined": "这些路径中任一非空时视为有效（逗号分隔）。",
-	"validity.fallback": "无法判断时的兜底结论（true/false）。",
+	"extractor.validity.path": "判断凭据是否有效的字段路径。",
+	"extractor.validity.allTruthy": "这些路径都为真时视为有效（逗号分隔）。",
+	"extractor.validity.firstDefined": "这些路径中任一非空时视为有效（逗号分隔）。",
+	"extractor.validity.fallback": "无法判断时的兜底结论（true/false）。",
 	"credentials.apiKey": "条目的 API Key 覆盖；留空则用 pi 运行时解析的凭据。",
 	"credentials.accessToken": "条目的 access token 覆盖；留空则用 pi 运行时解析的凭据。",
 	"credentials.userId": "部分接口需要的用户标识。",
@@ -90,7 +92,7 @@ function isInherited(draft: JsonObject, base: JsonObject | undefined, path: stri
 	return valueAtPath(draft, path) === undefined && base !== undefined && valueAtPath(base, path) !== undefined;
 }
 
-/** 字符串列表字段的展示值（validity.allTruthy / validity.firstDefined）。 */
+/** 字符串列表字段的展示值（extractor.validity.allTruthy / extractor.validity.firstDefined）。 */
 function listText(draft: JsonObject, base: JsonObject | undefined, path: string): string {
 	const value = effectiveAt(draft, base, path);
 	if (value === undefined) return "<无>";
@@ -99,16 +101,16 @@ function listText(draft: JsonObject, base: JsonObject | undefined, path: string)
 
 /** 有效性兜底字段（布尔）的展示值。 */
 function fallbackText(draft: JsonObject, base: JsonObject | undefined): string {
-	const value = effectiveAt(draft, base, "validity.fallback");
+	const value = effectiveAt(draft, base, "extractor.validity.fallback");
 	return value === undefined ? "<无>" : String(value);
 }
 
-function buildBalanceRows(draft: JsonObject, showProfile: boolean, profileNames: readonly string[], base?: JsonObject): FieldSpec[] {
+function buildBalanceRows(draft: JsonObject, showTemplate: boolean, templateNames: readonly string[], base?: JsonObject): FieldSpec[] {
 	const rows: FieldSpec[] = [];
-	if (showProfile) {
-		const rawProfile = draft.profile;
-		const profile = typeof rawProfile === "string" ? rawProfile : isRecord(rawProfile) ? "(内联模板)" : "";
-		rows.push({ id: "profile", label: "绑定模板", value: profile || "<不使用模板>" });
+	if (showTemplate) {
+		const rawTemplate = draft.template;
+		const template = typeof rawTemplate === "string" ? rawTemplate : isRecord(rawTemplate) ? "(内联模板)" : "";
+		rows.push({ id: "template", label: "绑定模板", value: template || "<不使用模板>" });
 	}
 	const eff = (path: string) => effectiveAt(draft, base, path);
 	// 凭据不回退到模板：避免把模板密钥静默复制进 provider 条目。
@@ -145,15 +147,15 @@ function buildBalanceRows(draft: JsonObject, showProfile: boolean, profileNames:
 	row("extractor.scale", "缩放系数", `${textOr(eff("extractor.scale"), "<1，不改余量>")}${isInherited(draft, base, "extractor.scale") ? "（继承）" : ""}`);
 	row("extractor.errorPath", "错误信息路径", `${textOr(eff("extractor.errorPath"), "<未设置>")}${isInherited(draft, base, "extractor.errorPath") ? "（继承）" : ""}`);
 	row("extractor.errorFallback", "失败提示", `${textOr(eff("extractor.errorFallback"), "Balance query failed")}${isInherited(draft, base, "extractor.errorFallback") ? "（继承）" : ""}`);
-	row("validity.path", "有效性路径", `${textOr(eff("validity.path"), "<未设置>")}${isInherited(draft, base, "validity.path") ? "（继承）" : ""}`);
-	row("validity.allTruthy", "有效性全真", `${listText(draft, base, "validity.allTruthy")}${isInherited(draft, base, "validity.allTruthy") ? "（继承）" : ""}`);
-	row("validity.firstDefined", "有效性逐项", `${listText(draft, base, "validity.firstDefined")}${isInherited(draft, base, "validity.firstDefined") ? "（继承）" : ""}`);
-	row("validity.fallback", "有效性兜底", `${fallbackText(draft, base)}${isInherited(draft, base, "validity.fallback") ? "（继承）" : ""}`);
-	row("credentials.apiKey", "apiKey", maskSecret(valueAtPath(draft, "credentials.apiKey")));
-	row("credentials.accessToken", "accessToken", maskSecret(valueAtPath(draft, "credentials.accessToken")));
-	row("credentials.userId", "userId", textOr(valueAtPath(draft, "credentials.userId"), "<未设置>"));
+	row("extractor.validity.path", "有效性路径", `${textOr(eff("extractor.validity.path"), "<未设置>")}${isInherited(draft, base, "extractor.validity.path") ? "（继承）" : ""}`);
+	row("extractor.validity.allTruthy", "有效性全真", `${listText(draft, base, "extractor.validity.allTruthy")}${isInherited(draft, base, "extractor.validity.allTruthy") ? "（继承）" : ""}`);
+	row("extractor.validity.firstDefined", "有效性逐项", `${listText(draft, base, "extractor.validity.firstDefined")}${isInherited(draft, base, "extractor.validity.firstDefined") ? "（继承）" : ""}`);
+	row("extractor.validity.fallback", "有效性兜底", `${fallbackText(draft, base)}${isInherited(draft, base, "extractor.validity.fallback") ? "（继承）" : ""}`);
+	row("credentials.apiKey", "API Key", maskSecret(valueAtPath(draft, "credentials.apiKey")));
+	row("credentials.accessToken", "Access Token", maskSecret(valueAtPath(draft, "credentials.accessToken")));
+	row("credentials.userId", "用户 ID", textOr(valueAtPath(draft, "credentials.userId"), "<未设置>"));
 	row("raw", "原始 JSON", "编辑整个条目");
-	void profileNames;
+	void templateNames;
 	return rows;
 }
 
@@ -172,9 +174,9 @@ function sectionSummary(sectionId: string, draft: JsonObject, base?: JsonObject)
 			return "<未设置>";
 		}
 		case "validity": {
-			const path = textOr(eff("validity.path"), "");
+			const path = textOr(eff("extractor.validity.path"), "");
 			if (path) return `路径 ${path}`;
-			if (eff("validity.allTruthy") !== undefined || eff("validity.firstDefined") !== undefined || eff("validity.fallback") !== undefined) return "已配置";
+			if (eff("extractor.validity.allTruthy") !== undefined || eff("extractor.validity.firstDefined") !== undefined || eff("extractor.validity.fallback") !== undefined) return "已配置";
 			return "<未设置>";
 		}
 		case "credentials": {
@@ -222,12 +224,12 @@ async function editStringListField(ctx: ExtensionCommandContext, draft: JsonObje
 
 /** 布尔兼底字段编辑：true/false 转为布尔，其它文本原样保留；留空清除。 */
 async function editFallbackField(ctx: ExtensionCommandContext, draft: JsonObject, base?: JsonObject): Promise<void> {
-	const current = effectiveAt(draft, base, "validity.fallback");
+	const current = effectiveAt(draft, base, "extractor.validity.fallback");
 	const value = await ctx.ui.input(`有效性兜底（当前：${fallbackText(draft, base)}；true/false，留空清除）`, typeof current === "boolean" ? String(current) : textOr(current, ""));
 	if (value === undefined) return;
 	const trimmed = value.trim();
 	const lowered = trimmed.toLowerCase();
-	setValueAtPath(draft, "validity.fallback", trimmed === "" ? "" : lowered === "true" ? true : lowered === "false" ? false : trimmed);
+	setValueAtPath(draft, "extractor.validity.fallback", trimmed === "" ? "" : lowered === "true" ? true : lowered === "false" ? false : trimmed);
 }
 
 async function editBody(ctx: ExtensionCommandContext, draft: JsonObject, base?: JsonObject): Promise<void> {
@@ -310,14 +312,14 @@ async function editBalanceFieldById(
 		return;
 	}
 	if (id.startsWith("credentials.")) {
-		await editSecretField(ctx, draft, id, id.slice("credentials.".length));
+		await editSecretField(ctx, draft, id, label);
 		return;
 	}
-	if (id === "validity.allTruthy" || id === "validity.firstDefined") {
+	if (id === "extractor.validity.allTruthy" || id === "extractor.validity.firstDefined") {
 		await editStringListField(ctx, draft, id, label, base);
 		return;
 	}
-	if (id === "validity.fallback") {
+	if (id === "extractor.validity.fallback") {
 		await editFallbackField(ctx, draft, base);
 		return;
 	}
@@ -343,19 +345,20 @@ async function editBalanceSection(
 	title: string,
 	section: BalanceSection,
 	draft: JsonObject,
-	options: { showProfile: boolean; profileNames: readonly string[]; base?: JsonObject },
+	options: { showTemplate: boolean; templateNames: readonly string[]; base?: JsonObject },
 ): Promise<"back" | "save"> {
 	const cursor: MenuCursor = { index: 0 };
 	while (true) {
-		const allRows = buildBalanceRows(draft, options.showProfile, options.profileNames, options.base);
+		const allRows = buildBalanceRows(draft, options.showTemplate, options.templateNames, options.base);
 		const rows: MenuRow[] = allRows
 			.filter((spec) => section.fields.includes(spec.id))
-			.map((spec) => ({ id: spec.id, label: `${padLabel(spec.label, 16)}${spec.value}`, searchText: `${spec.label}\n${spec.value}` }));
+			.map((spec) => ({ id: spec.id, label: `${padLabel(spec.label, 16)}${spec.value}`, searchText: `${spec.id}\n${spec.label}\n${spec.value}` }));
 		const action = await showPersistentFormMenu(ctx, `${title} › ${section.label}`, "", rows, cursor, {
 			getContext: () => "Ctrl+S 保存 · Esc 返回",
 			getDetailLines: (row) => {
-				const help = row ? BALANCE_FIELD_HELP[row.id] : undefined;
-				return help ? [`  ${help}`] : [];
+				if (!row) return [];
+				const help = BALANCE_FIELD_HELP[row.id];
+				return help ? [`  ${row.id} — ${help}`] : [];
 			},
 			hints: [
 				{ key: "↑↓", label: "选择" },
@@ -371,15 +374,15 @@ async function editBalanceSection(
 	}
 }
 
-function buildSectionRows(draft: JsonObject, options: { showProfile: boolean; profileNames: readonly string[]; base?: JsonObject }): MenuRow[] {
-	const profileValue = typeof draft.profile === "string" ? draft.profile : isRecord(draft.profile) ? "(内联模板)" : "<不使用模板>";
+function buildSectionRows(draft: JsonObject, options: { showTemplate: boolean; templateNames: readonly string[]; base?: JsonObject }): MenuRow[] {
+	const templateValue = typeof draft.template === "string" ? draft.template : isRecord(draft.template) ? "(内联模板)" : "<不使用模板>";
 	return [
 		...BALANCE_SECTIONS.map((section) => ({
 			id: section.id,
 			label: `${padLabel(section.label, 14)}${sectionSummary(section.id, draft, options.base)}`,
 			searchText: `${section.label} ${section.fields.join(" ")}`,
 		})),
-		...(options.showProfile ? [{ id: "profile", label: `${padLabel("绑定模板", 14)}${profileValue}`, searchText: "绑定模板 profile" }] : []),
+		...(options.showTemplate ? [{ id: "template", label: `${padLabel("绑定模板", 14)}${templateValue}`, searchText: "绑定模板 template" }] : []),
 		{ id: "raw", label: `${padLabel("原始 JSON", 14)}编辑整个条目`, searchText: "原始 JSON raw" },
 		{ id: "save", label: `${padLabel("保存", 14)}写入 usage-config.yaml`, searchText: "保存 save" },
 	];
@@ -387,29 +390,30 @@ function buildSectionRows(draft: JsonObject, options: { showProfile: boolean; pr
 
 /**
  * 编辑一个余额条目草稿；draft 会被就地修改。
- * showProfile 为 true 时（providers 条目）出现"绑定模板"行；
- * profileNames 用于展示与校验，保存前由调用方负责最终校验。
+ * showTemplate 为 true 时（balances 条目）出现"绑定模板"行；
+ * templateNames 用于展示与校验，保存前由调用方负责最终校验。
  */
 export async function editBalanceEntry(
 	ctx: ExtensionCommandContext,
 	title: string,
 	draft: JsonObject,
-	options: { showProfile: boolean; profileNames: readonly string[]; builtinOnlyProfileNames?: readonly string[]; base?: JsonObject },
+	options: { showTemplate: boolean; templateNames: readonly string[]; builtinOnlyTemplateNames?: readonly string[]; base?: JsonObject },
 ): Promise<EntryEditOutcome> {
 	const cursor: MenuCursor = { index: 0 };
 	while (true) {
 		const rows = buildSectionRows(draft, options);
-		const allRows = buildBalanceRows(draft, options.showProfile, options.profileNames, options.base);
+		const allRows = buildBalanceRows(draft, options.showTemplate, options.templateNames, options.base);
 		const action = await showPersistentFormMenu(ctx, title, "", rows, cursor, {
 			getContext: () => "Ctrl+S 保存 · Esc 返回",
 			getDetailLines: (row) => {
-				if (row?.id === "profile") return ["  绑定模板后，未覆盖的字段自动继承模板；同名字段以本条目为准。"];
-				if (row?.id === "raw") return ["  直接编辑整个条目的 JSON，保存后整体替换。"];
-				if (row?.id === "save") return ["  写入 usage-config.yaml；外部并发修改会被指纹校验拦下。"];
-				const section = BALANCE_SECTIONS.find((candidate) => candidate.id === row?.id);
+				if (!row) return [];
+				if (row.id === "template") return ["  template — 绑定模板后，未覆盖的字段自动继承模板；同名字段以本条目为准。"];
+				if (row.id === "raw") return ["  raw — 直接编辑整个条目的 JSON，保存后整体替换。"];
+				if (row.id === "save") return ["  usage-config.yaml — 写入磁盘；外部并发修改会被指纹校验拦下。"];
+				const section = BALANCE_SECTIONS.find((candidate) => candidate.id === row.id);
 				if (!section) return [];
 				const labels = section.fields.map((field) => allRows.find((spec) => spec.id === field)?.label ?? field);
-				return [`  包含：${labels.join("、")}`];
+				return [`  ${section.keyPrefix} — 包含：${labels.join("、")}`];
 			},
 			hints: [
 				{ key: "↑↓", label: "选择" },
@@ -419,22 +423,22 @@ export async function editBalanceEntry(
 			],
 			helpLines: [
 				"分节进入后逐字段编辑；Ctrl+S 在任意一层都能保存。",
-				"表单预填 profile -> provider 合并后的有效值，（继承）表示未覆盖。",
+				"表单预填 template -> provider 合并后的有效值，（继承）表示未覆盖。",
 				"留空通常表示清除覆盖、恢复继承；凭据留空则保持原值（输入 - 清除）。",
 			],
 		});
 		if (action.type === "cancel") return { action: "cancel" };
 		if (action.type === "save" || action.id === "save") return { action: "save", entry: draft };
-		if (action.id === "profile") {
+		if (action.id === "template") {
 			const choices = [
 				{ id: "", label: "<不使用模板>" },
-				...options.profileNames.map((name) => ({
+				...options.templateNames.map((name) => ({
 					id: name,
-					label: options.builtinOnlyProfileNames?.includes(name) ? `${name}（内置）` : name,
+					label: options.builtinOnlyTemplateNames?.includes(name) ? `${name}（内置）` : name,
 				})),
 			];
-			const choice = await showOptionPicker(ctx, "绑定余额模板", choices, typeof draft.profile === "string" ? draft.profile : "");
-			if (choice) setValueAtPath(draft, "profile", choice.id);
+			const choice = await showOptionPicker(ctx, "绑定余额模板", choices, typeof draft.template === "string" ? draft.template : "");
+			if (choice) setValueAtPath(draft, "template", choice.id);
 			continue;
 		}
 		if (action.id === "raw") {
@@ -449,6 +453,6 @@ export async function editBalanceEntry(
 }
 
 /** 导出给覆盖率测试：余额条目表单必须覆盖运行时读取的全部字段。 */
-export function balanceFormRows(draft: JsonObject, showProfile = true, profileNames: readonly string[] = [], base?: JsonObject) {
-	return buildBalanceRows(draft, showProfile, profileNames, base);
+export function balanceFormRows(draft: JsonObject, showTemplate = true, templateNames: readonly string[] = [], base?: JsonObject) {
+	return buildBalanceRows(draft, showTemplate, templateNames, base);
 }

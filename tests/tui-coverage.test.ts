@@ -8,7 +8,7 @@ import { balanceFormRows } from "../tui/usage-editor.ts";
 test("余额条目表单覆盖运行时全部字段", () => {
 	const ids = new Set(balanceFormRows({}, true, []).map((row) => row.id));
 	const expected = [
-		"profile",
+		"template",
 		"request.url",
 		"request.baseUrl",
 		"request.method",
@@ -23,18 +23,18 @@ test("余额条目表单覆盖运行时全部字段", () => {
 		"extractor.scale",
 		"extractor.errorPath",
 		"extractor.errorFallback",
-		"validity.path",
-		"validity.allTruthy",
-		"validity.firstDefined",
-		"validity.fallback",
+		"extractor.validity.path",
+		"extractor.validity.allTruthy",
+		"extractor.validity.firstDefined",
+		"extractor.validity.fallback",
 		"credentials.apiKey",
 		"credentials.accessToken",
 		"credentials.userId",
 		"raw",
 	];
 	for (const id of expected) assert.ok(ids.has(id), `余额表单缺少字段: ${id}`);
-	// 模板行只在 providers 条目出现，profiles 条目不应出现。
-	assert.ok(!new Set(balanceFormRows({}, false, []).map((row) => row.id)).has("profile"));
+	// 模板行只在 balances 条目出现，templates 条目不应出现。
+	assert.ok(!new Set(balanceFormRows({}, false, []).map((row) => row.id)).has("template"));
 });
 
 test("订阅条目表单覆盖运行时全部字段并使用统一的 request.* 命名", () => {

@@ -77,7 +77,7 @@ export interface ReconcileOptions {
  * Provider 身份对账：在配置锁内执行。
  * - 新增 Provider：只报告，不自动创建余额配置；
  * - 已有 Provider：原样保留；
- * - 删除 Provider：默认保留为 orphan，`confirmPrune` 明确确认后隔离进 `orphanBalances`（可恢复）；
+ * - 删除 Provider：默认保留为 orphan，`confirmPrune` 明确确认后隔离进 `orphans`（可恢复）；
  * - pi 内置 provider（builtinIds）不在 models.json 里，配置了也不算 orphan；
  * - 显式 rename 事件：迁移 balance key 并记录 alias；存在冲突时停止自动写入，报告冲突。
  * 订阅条目（subscriptions）不参与隔离，它们以 provider ID 为键、由内置适配器驱动。
@@ -137,16 +137,16 @@ export async function reconcileProviders(agentDir: string, path: string, options
 		const idsAfterRename = balanceIds();
 		const orphan = [...idsAfterRename].filter(isOrphan);
 
-		// prune：用户明确确认后才把 orphan 隔离进 orphanBalances（可恢复，不做物理删除）。
+		// prune：用户明确确认后才把 orphan 隔离进 orphans（可恢复，不做物理删除）。
 		const quarantined: string[] = [];
 		if (orphan.length > 0 && options.confirmPrune && (await options.confirmPrune(orphan))) {
-			const quarantine: Record<string, JsonObject> = { ...(providerRecord(current.orphanBalances) ?? {}) };
+			const quarantine: Record<string, JsonObject> = { ...(providerRecord(current.orphans) ?? {}) };
 			for (const id of orphan) {
 				quarantine[id] = balances[id]!;
 				delete balances[id];
 				quarantined.push(id);
 			}
-			current.orphanBalances = quarantine;
+			current.orphans = quarantine;
 		}
 
 		const changed = renamed.length > 0 || quarantined.length > 0;

@@ -1,5 +1,5 @@
 import { objectAt, readConfig } from "./usage-config.ts";
-import { BUILTIN_PROFILES } from "./builtin.ts";
+import { BUILTIN_TEMPLATES } from "./builtin.ts";
 import { extractBalanceText, interpolateObject } from "./usage-extractor.ts";
 import type { FetchLike, JsonObject, UsageSource } from "./types.ts";
 
@@ -34,7 +34,7 @@ export async function readBoundedBody(response: Response): Promise<string> {
 	return new TextDecoder().decode(body);
 }
 
-/** 余额型查询：profile 合并 → 请求 → extractor 提取文本。 */
+/** 余额型查询：template 合并 → 请求 → extractor 提取文本。 */
 export async function requestBalance(
 	agentDir: string,
 	providerId: string,
@@ -45,20 +45,20 @@ export async function requestBalance(
 	const config = readConfig(agentDir);
 	const provider = objectAt(config.balances?.[providerId], "") ?? undefined;
 	if (!provider) throw new Error(`Balance is not configured for ${providerId}`);
-	// profile 既支持字符串引用（profiles 表中的名字），也支持内联对象/YAML 别名展开出的对象。
-	const rawProfile = provider.profile;
-	let profile: JsonObject | undefined;
-	if (typeof rawProfile === "string") {
-		profile = objectAt(config.profiles?.[rawProfile], "");
+	// template 既支持字符串引用（templates 表中的名字），也支持内联对象/YAML 别名展开出的对象。
+	const rawTemplate = provider.template;
+	let template: JsonObject | undefined;
+	if (typeof rawTemplate === "string") {
+		template = objectAt(config.templates?.[rawTemplate], "");
 		// 配置文件里没有同名模板时回退到内置模板（如 openrouter）；用户同名自定义优先。
-		profile ??= BUILTIN_PROFILES[rawProfile];
-		if (!profile) throw new Error(`Unknown balance profile: ${rawProfile}`);
-	} else if (rawProfile && typeof rawProfile === "object" && !Array.isArray(rawProfile)) {
-		profile = rawProfile as JsonObject;
+		template ??= BUILTIN_TEMPLATES[rawTemplate];
+		if (!template) throw new Error(`Unknown balance template: ${rawTemplate}`);
+	} else if (rawTemplate && typeof rawTemplate === "object" && !Array.isArray(rawTemplate)) {
+		template = rawTemplate as JsonObject;
 	}
-	const request = { ...(objectAt(profile, "request") ?? {}), ...(objectAt(provider, "request") ?? {}) };
-	const extractor = { ...(objectAt(profile, "extractor") ?? {}), ...(objectAt(provider, "extractor") ?? {}) };
-	const credentials = { ...(objectAt(profile, "credentials") ?? {}), ...(objectAt(provider, "credentials") ?? {}) };
+	const request = { ...(objectAt(template, "request") ?? {}), ...(objectAt(provider, "request") ?? {}) };
+	const extractor = { ...(objectAt(template, "extractor") ?? {}), ...(objectAt(provider, "extractor") ?? {}) };
+	const credentials = { ...(objectAt(template, "credentials") ?? {}), ...(objectAt(provider, "credentials") ?? {}) };
 	const baseUrl = String(request.baseUrl ?? source.baseUrl ?? "").replace(/\/v1\/?$/, "");
 	const apiKey = String(credentials.apiKey ?? source.apiKey ?? "");
 	const vars = {

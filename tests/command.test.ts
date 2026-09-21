@@ -1,5 +1,5 @@
 // /usage 子命令语法回归：与 workspace-preset 的 /preset 保持同一风格
-// （status / edit / help + 领域扩展；未知子命令给出统一用法）。
+// （status / config / help + 领域扩展；未知子命令给出统一用法）。
 import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -39,7 +39,7 @@ test("/usage help 显示统一用法", async () => {
 	const { invoke, notifications } = setup();
 	await invoke("help");
 	assert.equal(notifications.at(-1)!.level, "info");
-	assert.match(notifications.at(-1)!.message, /usage: \/usage \[status \| edit \| update \| reconcile \[--prune\]\]/);
+	assert.match(notifications.at(-1)!.message, /usage: \/usage \[status \| config \| update \| reconcile \[--prune\]\]/);
 });
 
 test("/usage 未知子命令给出统一用法", async () => {
@@ -50,11 +50,11 @@ test("/usage 未知子命令给出统一用法", async () => {
 	assert.match(notifications.at(-1)!.message, /usage: \/usage/);
 });
 
-test("/usage edit 与别名 config 在无 UI 时提示需要 TUI", async () => {
+test("/usage config 与别名 edit 在无 UI 时提示需要 TUI", async () => {
 	const { invoke, notifications } = setup();
-	await invoke("edit");
-	assert.match(notifications.at(-1)!.message, /需要交互式 TUI/);
 	await invoke("config");
+	assert.match(notifications.at(-1)!.message, /需要交互式 TUI/);
+	await invoke("edit");
 	assert.match(notifications.at(-1)!.message, /需要交互式 TUI/);
 });
 

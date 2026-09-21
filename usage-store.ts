@@ -115,13 +115,13 @@ export async function mutateConfig(
 
 export function serializeUsageConfig(config: UsageConfig): string {
 	const body = stringifyYaml(config, { defaultStringType: "QUOTE_DOUBLE", lineWidth: 0 });
-	return `# Managed by pi-provider-status. Quarantined orphan entries are preserved in orphanBalances.\n${body}`;
+	return `# Managed by pi-provider-status. Quarantined orphan entries are preserved in orphans.\n${body}`;
 }
 
 /** Removes any configured credential value from `message` before it reaches UI, logs or tests. */
 export function redactSecrets(message: string, config: UsageConfig): string {
 	let result = message;
-	const sections = [config.profiles ?? {}, config.balances ?? {}, config.subscriptions ?? {}, config.orphanBalances ?? {}];
+	const sections = [config.templates ?? {}, config.balances ?? {}, config.subscriptions ?? {}, config.orphans ?? {}];
 	for (const section of sections) {
 		for (const entry of Object.values(section)) {
 			if (!entry || typeof entry !== "object") continue;

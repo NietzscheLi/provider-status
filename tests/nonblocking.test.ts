@@ -7,7 +7,7 @@ import test from "node:test";
 import providerStatusExtension from "../index.ts";
 
 const CONFIG = [
-  "profiles: {}",
+  "templates: {}",
   "balances:",
   "  demo:",
   "    request:",

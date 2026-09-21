@@ -13,7 +13,7 @@
 
 | 文件 | 角色 |
 |---|---|
-| `~/.pi/agent/usage-config.yaml` | 唯一的用户配置：刷新间隔、`profiles` 模板、`balances`、`subscriptions` |
+| `~/.pi/agent/usage-config.yaml` | 唯一的用户配置：刷新间隔、`templates` 模板、`balances`、`subscriptions` |
 | `~/.pi/agent/usage-config.lock` | 写入互斥锁（容忍 30s 内的 stale lock），跨进程保护读-改-写 |
 | `~/.pi/agent/provider-usage-map.json` | Provider 重命名时的 alias 记录（对账产物，无 secret） |
 | `~/.pi/agent/balance-config.yaml` | **旧文件**：首次启动自动迁移为 `usage-config.yaml`，旧文件保留不删 |
@@ -26,34 +26,34 @@
 | 命令 | 行为 |
 |---|---|
 | `/usage`（或 `/usage status`） | 执行一次 Provider 身份对账、刷新并显示当前用量/TPS |
-| `/usage edit`（别名 `/usage config`） | 打开 TUI 编辑面板（需要交互式 UI） |
+| `/usage config`（别名 `/usage edit`） | 打开 TUI 编辑面板（需要交互式 UI） |
 | `/usage update` | 强制刷新当前 provider（忽略缓存间隔） |
 | `/usage reconcile` | 只执行对账并显示报告，不刷新 |
-| `/usage reconcile --prune` | 对 orphan 余额条目执行隔离前确认，确认后从 `balances` 移入 `orphanBalances`（可恢复） |
+| `/usage reconcile --prune` | 对 orphan 余额条目执行隔离前确认，确认后从 `balances` 移入 `orphans`（可恢复） |
 | `/usage help` | 显示可用子命令 |
 
-子命令风格与 `workspace-preset` 的 `/preset` 保持一致：`status` / `edit` / `help` 是通用子命令，其余为各自领域扩展。
+子命令风格与 `workspace-preset` 的 `/preset` 保持一致：`status` / `config` / `help` 是通用子命令（`edit` 保留为 `config` 的兼容别名），其余为各自领域扩展。
 
 ## 配置参考（usage-config.yaml）
 
 ```yaml
-refreshIntervalMinutes: 5
+refreshInterval: 5
 
-# 余额模板：公共请求/提取协议，provider 通过 profile 引用继承。
-profiles:
+# 余额模板：公共请求/提取协议，provider 通过 template 引用继承。
+templates:
   newapi: &newapi
     request: { ... }
     extractor: { ... }
 
-# 余额型 provider（旧段名 providers）。
+# 余额型 provider。
 balances:
   MyRelay:
-    profile: newapi
+    template: newapi
     request:   { baseUrl: https://example.com }
     extractor: { unit: $, scale: 0.5 }
     credentials: { apiKey: sk-... }
   openrouter:
-    profile: openrouter        # 内置模板，开箱即用
+    template: openrouter      # 内置模板，开箱即用
 
 # 订阅型 provider：键必须与 provider ID 大小写完全一致。
 subscriptions:
@@ -72,13 +72,13 @@ subscriptions:
   kimi-coding:
     adapter: kimi
 
-# 隔离的孤儿余额条目（旧段名 orphanProviders）。
-orphanBalances: {}
+# 隔离的孤儿余额条目。
+orphans: {}
 ```
 
 ### 余额继承与合并语义
 
-- provider 自身字段与 profile 做**浅合并**：`request`、`extractor`、`credentials` 三段各自独立合并，provider 同名字段整体覆盖 profile；
+- provider 自身字段与 template 做**浅合并**：`request`、`extractor`、`credentials` 三段各自独立合并，provider 同名字段整体覆盖 template；
 - 运行时 provider `credentials` 优先于 models.json 的 provider auth；
 - 编辑面板会把合并后的有效值预填写出来，继承字段带（继承）标记；留空清除覆盖、恢复继承。
 
@@ -105,7 +105,9 @@ orphanBalances: {}
 | `scale` | 余量缩放系数（默认 1） |
 | `errorPath` / `errorFallback` | 查询无效时的错误信息来源与兜底文案 |
 
-### validity（响应有效性判定）
+### extractor.validity（响应有效性判定）
+
+`validity` 挂在 `extractor` 下（TUI 的「有效性」分节写入的正是 `extractor.validity.*`）：
 
 | 字段 | 说明 |
 |---|---|
@@ -149,20 +151,20 @@ tps     = "⚡"
 
 状态栏文本只展示窗口与已用百分比（`5h 15% · wk 3% · mo 0%`），不带 provider 前缀和重置倒计时；渲染遵循 starship `extension_status` 的约束，不产出尾部 `(...)` 与逗号，超宽时只保留 5h 窗口。
 
-## TUI 编辑面板（/usage edit）
+## TUI 编辑面板（/usage config）
 
-两级导航，每屏只做一件事：
+两级导航，每屏只做一件事；行上只显示中文标签，按 **?** 在帮助浮层里查看对应的 YAML 键与字段说明：
 
 - **主面板**：`余额配置` / `订阅配置` / `余额模板` / `隔离条目`（有隔离时才出现） / `刷新间隔` / `原始 YAML` / `退出`。`↑↓` 选择，**Enter** 进入，`q` / `Esc` 退出；
 - **分类页**：首行 `＋ 新建…`，下面是已配置条目。`↑↓` 选择，**Enter** 打开，`n` 新建，`d` 删除，`Esc` 返回；
 - **条目编辑器**：第一层按 `请求 / 提取 / 有效性 / 凭据 / 绑定模板 / 原始 JSON / 保存` 分节，**Enter** 进入分节后逐字段编辑；**Ctrl+S** 在任意一层保存，`Esc` 逐层返回；
 - 列表顶部一行上下文，按 **?** 打开完整快捷键与字段说明浮层。
 
-- `balances`：为每个 provider 绑定 profile 或覆盖 request/extractor/credentials/validity；键与 provider ID 大小写完全一致；凭据掩码显示，输入 `-` 清除；
-- `subscriptions`：选择 adapter 并覆盖 label/baseUrl/超时/宽度/附加请求头/凭据；
-- `profiles`：模板增删改；内置模板（`openrouter`）无需定义即可绑定，同名自定义优先；
-- `orphanBalances`：隔离条目的恢复（节点移动，保留原注释）与彻底删除；
-- `refreshIntervalMinutes`：刷新间隔（留空恢复默认 5）。
+- `balances`：为每个 provider 绑定 template 或覆盖 `request.*` / `extractor.*` / `extractor.validity.*` / `credentials.*`；键与 provider ID 大小写完全一致；凭据掩码显示，输入 `-` 清除；
+- `subscriptions`：选择 `adapter` 并覆盖 `label` / `request.baseUrl` / 超时 / `maxWidth` / 附加请求头 / 凭据；
+- `templates`：模板增删改；条目用 `template` 绑定；内置模板（`openrouter`）无需定义即可绑定，同名自定义优先；
+- `orphans`：隔离条目的恢复（节点移动，保留原注释）与彻底删除；
+- `refreshInterval`：刷新间隔（留空恢复默认 5）。
 
 写入走 `usage-edit.ts` 的定向编辑层：在配置锁内从磁盘重新解析最新内容，只对被编辑的条目做 `setIn`/`deleteIn` 后原子写回，未触摸条目的注释/格式/键序原样保留。
 
@@ -171,7 +173,7 @@ tps     = "⚡"
 余额配置与 `models.json` 只通过 Provider ID 关联：
 
 - 新增 Provider：只报告，不自动创建配置；
-- 删除 Provider：默认保留为 orphan 并报告；`--prune` 且用户确认后才隔离进 `orphanBalances`；
+- 删除 Provider：默认保留为 orphan 并报告；`--prune` 且用户确认后才隔离进 `orphans`；
 - pi 内置 provider（如 openrouter）不在 models.json 里，配置了也不算 orphan；
 - Provider 重命名：消费 `pi-model-manager` 广播的 `pi-model-manager:models-changed`（`provider-rename`），在锁内迁移余额 key 并记录 alias 到 `provider-usage-map.json`；
 - 订阅条目以 provider ID 为键、由内置适配器驱动，不参与隔离。
@@ -180,14 +182,21 @@ tps     = "⚡"
 
 - **不阻塞 pi**：网络请求全部后台异步，命令 handler 与事件回调绝不 `await`；
 - **缓存优先**：缓存新鲜时直接渲染，不解析认证、不发请求；
-- **定时调度**：`unref` 的递归 `setTimeout` 按 `refreshIntervalMinutes` 调度；
+- **定时调度**：`unref` 的递归 `setTimeout` 按 `refreshInterval` 调度；
 - **失败退避**：失败后 30s 内事件刷新不再击打端点（`/usage update` 不受限），失败不缓存为新鲜值；
 - **在途中止**：切换 provider/session 时通过 generation + AbortController 立即中止旧请求；
 - **有界读取**：响应体上限 64KB；`timeoutSeconds` 与外部中止共同生效。
 
 ## 迁移
 
-首次启动若存在旧 `balance-config.yaml` 且无新文件，自动迁移：`providers → balances`、`orphanProviders → orphanBalances`、`providers.*.profile` 保留；旧文件保留不删，后续以 `usage-config.yaml` 为准。若曾用旧段名手写新文件，读取时同样兼容归一化。
+启动时自动把旧键迁移到当前键名，注释与键序保留：
+
+- `refreshIntervalMinutes → refreshInterval`；
+- `profiles → templates`，条目字段 `profile → template`；
+- `orphanBalances` / `orphanProviders → orphans`，`providers → balances`；
+- 条目顶层的 `validity` 移入 `extractor.validity`（运行时只读这里；旧版 TUI 曾写在顶层）。
+
+旧文件 `balance-config.yaml` 存在且无新文件时同样一次性迁移，旧文件保留不删；读取路径也兼容旧键，即使迁移写盘失败也能正常工作。
 
 ## 开发与测试
 

@@ -1,6 +1,6 @@
 // usage-draft.ts
 //
-// 条目草稿的纯逻辑层：TUI 编辑器把 balances/subscriptions/profiles 条目当作 JsonObject 树就地修改。
+// 条目草稿的纯逻辑层：TUI 编辑器把 balances/subscriptions/templates 条目当作 JsonObject 树就地修改。
 // 这里集中路径读写、headers 键值对转换、掩码与数字解析，便于脱离 TUI 做单元测试。
 
 import type { JsonObject } from "./types.ts";
@@ -105,24 +105,24 @@ export function stableStringify(value: unknown): string {
 	return JSON.stringify(value) ?? "null";
 }
 
-/** 解析 provider 绑定的模板：字符串引用查 profiles 表，内联对象/YAML 别名展开的对象直接返回。 */
-export function resolveProfileBase(entry: JsonObject, profiles: Record<string, JsonObject>): JsonObject | undefined {
-	const raw = entry.profile;
-	if (typeof raw === "string" && raw) return profiles[raw];
+/** 解析 provider 绑定的模板：字符串引用查 templates 表，内联对象/YAML 别名展开的对象直接返回。 */
+export function resolveTemplateBase(entry: JsonObject, templates: Record<string, JsonObject>): JsonObject | undefined {
+	const raw = entry.template;
+	if (typeof raw === "string" && raw) return templates[raw];
 	if (isRecord(raw)) return raw;
 	return undefined;
 }
 
 /**
- * 内联/别名展开的 profile 若与某个具名模板完全一致，改回字符串引用，
+ * 内联/别名展开的模板若与某个具名模板完全一致，改回字符串引用，
  * 避免编辑保存时把别名展开成内联副本、悄悄切断与模板的继承关系。
  */
-export function normalizeProfileReference(entry: JsonObject, profiles: Record<string, JsonObject>): void {
-	const raw = entry.profile;
+export function normalizeTemplateReference(entry: JsonObject, templates: Record<string, JsonObject>): void {
+	const raw = entry.template;
 	if (!isRecord(raw)) return;
-	for (const [name, profile] of Object.entries(profiles)) {
-		if (stableStringify(profile) === stableStringify(raw)) {
-			entry.profile = name;
+	for (const [name, template] of Object.entries(templates)) {
+		if (stableStringify(template) === stableStringify(raw)) {
+			entry.template = name;
 			return;
 		}
 	}

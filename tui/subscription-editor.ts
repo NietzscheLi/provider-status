@@ -21,13 +21,15 @@ export type SubscriptionEditOutcome =
 interface SubscriptionSection {
 	id: string;
 	label: string;
+	// 该分节对应的配置键前缀；帮助浮层里用它把中文标签映射回 YAML 键。
+	keyPrefix: string;
 	fields: readonly string[];
 }
 
 const SUBSCRIPTION_SECTIONS: readonly SubscriptionSection[] = [
-	{ id: "connection", label: "连接", fields: ["adapter", "request.baseUrl", "request.timeoutSeconds", "request.headers"] },
-	{ id: "display", label: "显示", fields: ["label", "maxWidth"] },
-	{ id: "credentials", label: "凭据", fields: ["credentials.apiKey", "credentials.accessToken"] },
+	{ id: "connection", label: "连接", keyPrefix: "request.*", fields: ["adapter", "request.baseUrl", "request.timeoutSeconds", "request.headers"] },
+	{ id: "display", label: "显示", keyPrefix: "label / maxWidth", fields: ["label", "maxWidth"] },
+	{ id: "credentials", label: "凭据", keyPrefix: "credentials.*", fields: ["credentials.apiKey", "credentials.accessToken"] },
 ];
 
 const SUBSCRIPTION_FIELD_HELP: Record<string, string> = {
@@ -57,8 +59,8 @@ function buildRows(draft: JsonObject): { id: string; label: string; value: strin
 		{ id: "request.timeoutSeconds", label: "超时秒数", value: textOr(valueAtPath(draft, "request.timeoutSeconds"), "15") },
 		{ id: "request.headers", label: "请求头", value: headerCount > 0 ? `${headerCount} 项` : "<无>" },
 		{ id: "maxWidth", label: "状态栏宽度", value: textOr(draft.maxWidth, "48") },
-		{ id: "credentials.apiKey", label: "apiKey", value: maskSecret(valueAtPath(draft, "credentials.apiKey")) },
-		{ id: "credentials.accessToken", label: "accessToken", value: maskSecret(valueAtPath(draft, "credentials.accessToken")) },
+		{ id: "credentials.apiKey", label: "API Key", value: maskSecret(valueAtPath(draft, "credentials.apiKey")) },
+		{ id: "credentials.accessToken", label: "Access Token", value: maskSecret(valueAtPath(draft, "credentials.accessToken")) },
 		{ id: "raw", label: "原始 JSON", value: "编辑整个条目" },
 	];
 }
@@ -134,7 +136,7 @@ async function editSubscriptionFieldById(ctx: ExtensionCommandContext, rows: { i
 		return;
 	}
 	if (id.startsWith("credentials.")) {
-		await editSecretField(ctx, draft, id, id.slice("credentials.".length));
+		await editSecretField(ctx, draft, id, label);
 		return;
 	}
 	if (id === "request.timeoutSeconds" || id === "maxWidth") {
@@ -168,8 +170,9 @@ async function editSubscriptionSection(
 		const action = await showPersistentFormMenu(ctx, `${title} › ${section.label}`, "", rows, cursor, {
 			getContext: () => "Ctrl+S 保存 · Esc 返回",
 			getDetailLines: (row) => {
-				const help = row ? SUBSCRIPTION_FIELD_HELP[row.id] : undefined;
-				return help ? [`  ${help}`] : [];
+				if (!row) return [];
+				const help = SUBSCRIPTION_FIELD_HELP[row.id];
+				return help ? [`  ${row.id} — ${help}`] : [];
 			},
 			hints: [
 				{ key: "↑↓", label: "选择" },
@@ -202,12 +205,13 @@ export async function editSubscriptionEntry(ctx: ExtensionCommandContext, title:
 		const action = await showPersistentFormMenu(ctx, title, "", rows, cursor, {
 			getContext: () => "Ctrl+S 保存 · Esc 返回",
 			getDetailLines: (row) => {
-				if (row?.id === "raw") return ["  直接编辑整个条目的 JSON，保存后整体替换。"];
-				if (row?.id === "save") return ["  写入 usage-config.yaml；外部并发修改会被指纹校验拦下。"];
-				const section = SUBSCRIPTION_SECTIONS.find((candidate) => candidate.id === row?.id);
+				if (!row) return [];
+				if (row.id === "raw") return ["  raw — 直接编辑整个条目的 JSON，保存后整体替换。"];
+				if (row.id === "save") return ["  usage-config.yaml — 写入磁盘；外部并发修改会被指纹校验拦下。"];
+				const section = SUBSCRIPTION_SECTIONS.find((candidate) => candidate.id === row.id);
 				if (!section) return [];
 				const labels = section.fields.map((field) => allRows.find((spec) => spec.id === field)?.label ?? field);
-				return [`  包含：${labels.join("、")}`];
+				return [`  ${section.keyPrefix} — 包含：${labels.join("、")}`];
 			},
 			hints: [
 				{ key: "↑↓", label: "选择" },

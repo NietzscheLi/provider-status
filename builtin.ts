@@ -43,11 +43,11 @@ export function getBuiltinProviderIds(): Promise<ReadonlySet<string>> {
 }
 
 /**
- * 内置余额查询模板：providers 条目绑定同名 profile 时，
- * usage-config.yaml 的 profiles 段里没有同名模板也能直接使用。
+ * 内置余额查询模板：balances 条目绑定同名 template 时，
+ * usage-config.yaml 的 templates 段里没有同名模板也能直接使用。
  * 用户在 yaml 里自定义同名模板时优先级更高。
  */
-export const BUILTIN_PROFILES: Readonly<Record<string, JsonObject>> = {
+export const BUILTIN_TEMPLATES: Readonly<Record<string, JsonObject>> = {
 	openrouter: {
 		request: {
 			// 运行时会先去掉 baseUrl 末尾的 /v1 再拼接相对路径，避免出现 /api/api/v1。
@@ -63,6 +63,6 @@ export const BUILTIN_PROFILES: Readonly<Record<string, JsonObject>> = {
 	},
 };
 
-export function isBuiltinProfile(name: string): boolean {
-	return name in BUILTIN_PROFILES;
+export function isBuiltinTemplate(name: string): boolean {
+	return name in BUILTIN_TEMPLATES;
 }

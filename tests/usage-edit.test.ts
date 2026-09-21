@@ -6,10 +6,10 @@ import { maskSecret, pairsToHeaders, headersToPairs, parseNumberInput, setValueA
 import {
 	editConfigDocument,
 	ensureBaseConfigFile,
-	profileExists,
 	readSectionEntries,
 	removeEntry,
 	restoreOrphanEntry,
+	templateExists,
 	overwriteConfigFile,
 	upsertEntry,
 } from "../usage-edit.ts";
@@ -56,8 +56,8 @@ test("ensureBaseConfigFile 初始化基础配置且不覆盖已有文件", async
 	await ensureBaseConfigFile(dir);
 	assert.ok(existsSync(join(dir, "usage-config.yaml")));
 	const config = readConfig(dir);
-	assert.equal(config.refreshIntervalMinutes, 5);
-	assert.deepEqual(config.profiles, {});
+	assert.equal(config.refreshInterval, 5);
+	assert.deepEqual(config.templates, {});
 	assert.deepEqual(config.balances, {});
 	// 已有文件不被覆盖。
 	writeFileSync(join(dir, "usage-config.yaml"), "balances:\n  demo: {}\n");
@@ -67,53 +67,99 @@ test("ensureBaseConfigFile 初始化基础配置且不覆盖已有文件", async
 
 test("editConfigDocument 定向编辑保留未触碰内容的注释与格式", async () => {
 	const dir = makeDir();
-	writeFileSync(join(dir, "usage-config.yaml"), "# 顶部注释\nbalances:\n  demo: {}\n  keep:\n    # keep 的注释\n    profile: openrouter\n");
-	await upsertEntry(dir, "balances", "demo", { profile: "sub2api", request: { url: "https://x" } });
+	writeFileSync(join(dir, "usage-config.yaml"), "# 顶部注释\nbalances:\n  demo: {}\n  keep:\n    # keep 的注释\n    template: openrouter\n");
+	await upsertEntry(dir, "balances", "demo", { template: "sub2api", request: { url: "https://x" } });
 	const text = readFileSync(join(dir, "usage-config.yaml"), "utf8");
 	// 未触碰条目的注释原样保留；被替换条目内部的注释随节点重建（预期行为）。
 	assert.ok(text.includes("# 顶部注释"));
 	assert.ok(text.includes("# keep 的注释"));
-	assert.equal(readConfig(dir).balances!.keep && (readConfig(dir).balances as Record<string, { profile?: string }>).keep!.profile, "openrouter");
-	const demo = (readConfig(dir).balances as Record<string, { profile?: string; request?: { url?: string } }>).demo!;
-	assert.equal(demo.profile, "sub2api");
+	assert.equal(readConfig(dir).balances!.keep && (readConfig(dir).balances as Record<string, { template?: string }>).keep!.template, "openrouter");
+	const demo = (readConfig(dir).balances as Record<string, { template?: string; request?: { url?: string } }>).demo!;
+	assert.equal(demo.template, "sub2api");
 	assert.equal(demo.request!.url, "https://x");
 });
 
 test("外部并发修改不阻断定向编辑", async () => {
 	const dir = makeDir();
-	writeFileSync(join(dir, "usage-config.yaml"), "profiles:\n  a: {}\nbalances:\n  x: {}\n");
+	writeFileSync(join(dir, "usage-config.yaml"), "templates:\n  a: {}\nbalances:\n  x: {}\n");
 	const before = configFingerprint(dir);
 	// 模拟面板打开后、保存前文件被外部修改。
-	writeFileSync(join(dir, "usage-config.yaml"), "profiles:\n  a: {}\n  b: {}\nbalances:\n  x: {}\n  y: {}\n");
-	await upsertEntry(dir, "balances", "x", { profile: "a" });
+	writeFileSync(join(dir, "usage-config.yaml"), "templates:\n  a: {}\n  b: {}\nbalances:\n  x: {}\n  y: {}\n");
+	await upsertEntry(dir, "balances", "x", { template: "a" });
 	const config = readConfig(dir);
 	// 外部新增的条目完好，同时本次修改也生效。
 	assert.deepEqual(Object.keys(config.balances as Record<string, unknown>).sort(), ["x", "y"]);
-	assert.deepEqual(Object.keys(config.profiles as Record<string, unknown>).sort(), ["a", "b"]);
-	assert.equal((config.balances as Record<string, { profile?: string }>).x!.profile, "a");
+	assert.deepEqual(Object.keys(config.templates as Record<string, unknown>).sort(), ["a", "b"]);
+	assert.equal((config.balances as Record<string, { template?: string }>).x!.template, "a");
 	assert.notEqual(before, undefined);
 });
 
-test("upsertEntry / removeEntry / profileExists", async () => {
+test("upsertEntry / removeEntry / templateExists", async () => {
 	const dir = makeDir();
-	await upsertEntry(dir, "profiles", "newapi", { request: { url: "https://p" } });
-	await upsertEntry(dir, "balances", "demo", { profile: "newapi" });
-	assert.ok(profileExists(dir, "newapi"));
-	assert.ok(!profileExists(dir, "missing"));
-	assert.deepEqual(readSectionEntries(dir, "profiles")["newapi"], { request: { url: "https://p" } });
+	await upsertEntry(dir, "templates", "newapi", { request: { url: "https://p" } });
+	await upsertEntry(dir, "balances", "demo", { template: "newapi" });
+	assert.ok(templateExists(dir, "newapi"));
+	assert.ok(!templateExists(dir, "missing"));
+	assert.deepEqual(readSectionEntries(dir, "templates")["newapi"], { request: { url: "https://p" } });
 	await removeEntry(dir, "balances", "demo");
 	assert.deepEqual(readSectionEntries(dir, "balances"), {});
 });
 
 test("orphan 恢复是节点移动，保留注释", async () => {
 	const dir = makeDir();
-	writeFileSync(join(dir, "usage-config.yaml"), "balances: {}\norphanBalances:\n  gone:\n    # 保住我\n    profile: newapi\n");
+	writeFileSync(join(dir, "usage-config.yaml"), "balances: {}\norphans:\n  gone:\n    # 保住我\n    template: newapi\n");
 	await restoreOrphanEntry(dir, "gone");
 	const text = readFileSync(join(dir, "usage-config.yaml"), "utf8");
 	assert.ok(text.includes("# 保住我"));
 	const config = readConfig(dir);
 	assert.deepEqual(Object.keys(config.balances as Record<string, unknown>), ["gone"]);
-	assert.equal(config.orphanBalances, undefined);
+	assert.equal(config.orphans, undefined);
 	await overwriteConfigFile(dir, "balances:\n  a: {}\n", configFingerprint(dir));
 	assert.deepEqual(readConfig(dir).balances, { a: {} });
+});
+
+test("条目里非法的 extractor 值不会产生重复键", async () => {
+	const dir = makeDir();
+	writeFileSync(join(dir, "usage-config.yaml"), "balances:\n  demo:\n    extractor: null\n    validity:\n      path: data\n");
+	await ensureBaseConfigFile(dir);
+	const text = readFileSync(join(dir, "usage-config.yaml"), "utf8");
+	assert.equal(text.match(/^\s*extractor:/gm)?.length, 1);
+	const demo = (readConfig(dir).balances as Record<string, Record<string, unknown>>).demo!;
+	assert.deepEqual(demo.extractor, { validity: { path: "data" } });
+});
+
+test("已有文件里的旧键在加载时迁移为新键，注释保留", async () => {
+	const dir = makeDir();
+	writeFileSync(join(dir, "usage-config.yaml"), [
+		"# 顶部注释",
+		"refreshIntervalMinutes: 7",
+		"# 模板段注释",
+		"profiles:",
+		"  newapi:",
+		"    request: { url: 'https://p' }",
+		"balances:",
+		"  demo:",
+		"    # 绑定注释",
+		"    profile: newapi",
+		"    validity:",
+		"      allTruthy: [success]",
+		"orphanBalances:",
+		"  gone: {}",
+	].join("\n"));
+	await ensureBaseConfigFile(dir);
+	const text = readFileSync(join(dir, "usage-config.yaml"), "utf8");
+	assert.ok(text.includes("# 顶部注释"));
+	assert.ok(text.includes("# 模板段注释"));
+	assert.ok(text.includes("# 绑定注释"));
+	const config = readConfig(dir);
+	assert.equal(config.refreshInterval, 7);
+	assert.equal(config.refreshIntervalMinutes, undefined);
+	assert.equal(config.profiles, undefined);
+	assert.equal(config.orphanBalances, undefined);
+	assert.deepEqual(config.orphans, { gone: {} });
+	assert.equal((config.templates as Record<string, unknown>)!["newapi"] !== undefined, true);
+	const demo = (config.balances as Record<string, Record<string, unknown>>).demo!;
+	assert.equal(demo.template, "newapi");
+	assert.equal(demo.profile, undefined);
+	assert.deepEqual(demo.extractor, { validity: { allTruthy: ["success"] } });
 });

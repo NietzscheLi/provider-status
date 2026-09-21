@@ -62,11 +62,11 @@ test("配置锁容忍 stale lock：过期锁文件被接管", async () => {
 	assert.equal(existsSync(lockPath), false, "lock must be released");
 });
 
-test("redactSecrets 从输出中移除 profile/provider/orphan credentials 值", () => {
+test("redactSecrets 从输出中移除 template/balance/orphan credentials 值", () => {
 	const config = {
-		profiles: { newapi: { credentials: { accessToken: "sk-super-secret-token" } } },
+		templates: { newapi: { credentials: { accessToken: "sk-super-secret-token" } } },
 		balances: { demo: { credentials: { userId: "user-42" } } },
-		orphanBalances: { gone: { credentials: { apiKey: "orphan-key-123" } } },
+		orphans: { gone: { credentials: { apiKey: "orphan-key-123" } } },
 	} as unknown as UsageConfig;
 	const message = "request failed for sk-super-secret-token / user-42 / orphan-key-123";
 	assert.equal(redactSecrets(message, config), "request failed for *** / *** / ***");

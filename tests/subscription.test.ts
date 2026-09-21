@@ -198,7 +198,7 @@ test("fetchSubscriptionUsage：commandcode 401/403 给出套餐/登录提示", a
 test("UsageService 按配置分派订阅/余额并记录 kind", async () => {
 	const dir = makeDir();
 	writeFileSync(join(dir, "usage-config.yaml"), [
-		"profiles: {}",
+		"templates: {}",
 		"balances:",
 		"  relay:",
 		"    request: { url: 'https://relay.example/v1/usage' }",
@@ -236,11 +236,13 @@ test("旧 balance-config.yaml 一次性迁移到 usage-config.yaml，旧文件�
 	assert.equal(migrateLegacyConfig(dir), true);
 	assert.ok(existsSync(join(dir, "balance-config.yaml")));
 	const migrated = parseYaml(readFileSync(join(dir, "usage-config.yaml"), "utf8")) as Record<string, unknown>;
-	assert.equal(migrated.refreshIntervalMinutes, 9);
-	assert.deepEqual(migrated.balances, { demo: { profile: "newapi" } });
-	assert.deepEqual(migrated.orphanBalances, { gone: {} });
-	assert.equal(migrated.providers, undefined);
-	assert.equal(migrated.orphanProviders, undefined);
+	assert.equal(migrated.refreshInterval, 9);
+	assert.deepEqual(migrated.templates, { newapi: {} });
+	assert.deepEqual(migrated.balances, { demo: { template: "newapi" } });
+	assert.deepEqual(migrated.orphans, { gone: {} });
+	for (const legacyKey of ["providers", "orphanProviders", "profiles", "orphanBalances", "refreshIntervalMinutes"]) {
+		assert.equal(migrated[legacyKey], undefined, `旧键 ${legacyKey} 应被迁移`);
+	}
 	// 已存在新文件时不重复迁移，也不覆盖。
 	writeFileSync(join(dir, "usage-config.yaml"), "balances: {}\n");
 	await ensureBaseConfigFile(dir);

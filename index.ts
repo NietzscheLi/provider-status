@@ -191,10 +191,10 @@ export default function providerStatusExtension(pi: ExtensionAPI): void {
 	};
 
 	pi.registerCommand("usage", {
-		description: "Provider usage status; subcommands: status (default), edit (TUI), update, reconcile [--prune], help",
+		description: "Provider usage status; subcommands: status (default), config (TUI), update, reconcile [--prune], help",
 		handler: async (args, ctx) => {
-			// 子命令风格与 workspace-preset 对齐：status / edit / help + 领域扩展命令。
-			const USAGE = "usage: /usage [status | edit | update | reconcile [--prune]]";
+			// 子命令风格与 workspace-preset 对齐：status / config / help + 领域扩展命令。
+			const USAGE = "usage: /usage [status | config | update | reconcile [--prune]]";
 			const tokens = args.trim().split(/\s+/).filter(Boolean);
 			const command = (tokens[0] ?? "").toLowerCase();
 			if (command === "" || command === "status") {
@@ -203,7 +203,7 @@ export default function providerStatusExtension(pi: ExtensionAPI): void {
 				showStatus(ctx);
 				return;
 			}
-			if (command === "edit" || command === "config") {
+			if (command === "config" || command === "edit") {
 				if (!ctx.hasUI) {
 					notifySafe(ctx, `/usage ${command} 需要交互式 TUI`, "warning");
 					return;

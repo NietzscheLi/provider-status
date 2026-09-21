@@ -56,13 +56,16 @@ export interface FetchLike {
 }
 
 export interface UsageConfig extends JsonObject {
-	refreshIntervalMinutes?: number;
-	/** 余额模板（公共请求/提取协议）。 */
-	profiles?: JsonObject;
-	/** 余额型 provider 配置（旧段名 providers）。 */
+	/** 自动刷新间隔（分钟）。 */
+	refreshInterval?: number;
+	/** 余额模板（公共请求/提取协议）；条目用 template 字段绑定。 */
+	templates?: JsonObject;
+	/** 余额型 provider 配置。 */
 	balances?: JsonObject;
 	/** 订阅型 provider 配置（adapter 指向内置适配器）。 */
 	subscriptions?: JsonObject;
-	/** 隔离的孤儿余额配置（旧段名 orphanProviders）。 */
-	orphanBalances?: JsonObject;
+	/** 隔离的孤儿余额配置。 */
+	orphans?: JsonObject;
+	// 旧键（读取时归一化，见 usage-config.ts normalizeConfig）：
+	// refreshIntervalMinutes / profiles / orphanBalances / orphanProviders / providers。
 }

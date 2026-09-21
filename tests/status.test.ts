@@ -40,7 +40,7 @@ test("validity firstDefined/fallback/errorPath gate invalid responses", () => {
 
 test("deduplicates concurrent refreshes and preserves stale value", async () => {
   const dir = mkdtempSync(join("/tmp", "pi-provider-status-"));
-  writeFileSync(join(dir, "usage-config.yaml"), "profiles: {}\nbalances:\n  demo:\n    request:\n      url: https://example.invalid/balance\n    extractor:\n      remainingPath: remaining\n");
+  writeFileSync(join(dir, "usage-config.yaml"), "templates: {}\nbalances:\n  demo:\n    request:\n      url: https://example.invalid/balance\n    extractor:\n      remainingPath: remaining\n");
   let calls = 0;
   const fetcher = async () => { calls++; await new Promise((r) => setTimeout(r, 5)); return new Response(JSON.stringify({ remaining: 7 }), { status: 200 }); };
   const service = new UsageService(dir, fetcher, () => 1000);
@@ -50,7 +50,7 @@ test("deduplicates concurrent refreshes and preserves stale value", async () => 
 
 test("failed requests are not cached as fresh; next refresh retries immediately", async () => {
   const dir = mkdtempSync(join("/tmp", "pi-provider-status-"));
-  writeFileSync(join(dir, "usage-config.yaml"), "profiles: {}\nbalances:\n  demo:\n    request:\n      url: https://example.invalid/balance\n    extractor:\n      remainingPath: remaining\n");
+  writeFileSync(join(dir, "usage-config.yaml"), "templates: {}\nbalances:\n  demo:\n    request:\n      url: https://example.invalid/balance\n    extractor:\n      remainingPath: remaining\n");
   let calls = 0;
   const fetcher = async () => { calls++; if (calls === 1) return new Response("boom", { status: 500 }); return new Response(JSON.stringify({ remaining: 7 }), { status: 200 }); };
   const service = new UsageService(dir, fetcher, () => 1000);
@@ -66,7 +66,7 @@ test("failed requests are not cached as fresh; next refresh retries immediately"
 
 test("failure keeps the last success timestamp; stale success retries, fresh success does not", async () => {
   const dir = mkdtempSync(join("/tmp", "pi-provider-status-"));
-  writeFileSync(join(dir, "usage-config.yaml"), "profiles: {}\nbalances:\n  demo:\n    request:\n      url: https://example.invalid/balance\n    extractor:\n      remainingPath: remaining\n");
+  writeFileSync(join(dir, "usage-config.yaml"), "templates: {}\nbalances:\n  demo:\n    request:\n      url: https://example.invalid/balance\n    extractor:\n      remainingPath: remaining\n");
   let calls = 0;
   let clock = 1000;
   const fetcher = async () => { calls++; if (calls === 1) return new Response(JSON.stringify({ remaining: 7 }), { status: 200 }); return new Response("boom", { status: 500 }); };
@@ -99,10 +99,10 @@ test("reports new and orphan provider IDs without mutating config", async () => 
   assert.deepEqual(await reconcileProviders(dir, models), { added: ["fresh"], existing: ["keep"], orphan: ["old"], renamed: [], conflicts: [], quarantined: [], changed: false });
 });
 
-test("supports profile aliases/inline objects and relative request URLs", async () => {
+test("supports template aliases/inline objects and relative request URLs", async () => {
   const dir = mkdtempSync(join("/tmp", "pi-provider-status-"));
   writeFileSync(join(dir, "usage-config.yaml"), [
-    "profiles:",
+    "templates:",
     "  sub2api: &sub2api",
     "    request:",
     "      url: '{{baseUrl}}/v1/usage'",
@@ -113,11 +113,11 @@ test("supports profile aliases/inline objects and relative request URLs", async 
     "      unit: $",
     "balances:",
     "  alias:",
-    "    profile: *sub2api",
+    "    template: *sub2api",
     "    request:",
     "      baseUrl: https://alias.example",
     "  inline:",
-    "    profile:",
+    "    template:",
     "      request:",
     "        url: /v1/usage",
     "      extractor:",
@@ -139,7 +139,7 @@ test("supports profile aliases/inline objects and relative request URLs", async 
 
 test("balances 里未定义的同名模板回退到内置模板（openrouter）", async () => {
   const dir = mkdtempSync(join("/tmp", "pi-provider-status-"));
-  writeFileSync(join(dir, "usage-config.yaml"), "profiles: {}\nbalances:\n  openrouter:\n    profile: openrouter\n");
+  writeFileSync(join(dir, "usage-config.yaml"), "templates: {}\nbalances:\n  openrouter:\n    template: openrouter\n");
   let url = "";
   let auth: string | undefined;
   const fetcher = async (input: string | URL, init?: { headers?: Record<string, string> }) => {
@@ -155,7 +155,7 @@ test("balances 里未定义的同名模板回退到内置模板（openrouter）"
 test("用户自定义的同名模板优先于内置模板", async () => {
   const dir = mkdtempSync(join("/tmp", "pi-provider-status-"));
   writeFileSync(join(dir, "usage-config.yaml"), [
-    "profiles:",
+    "templates:",
     "  openrouter:",
     "    request:",
     "      url: https://custom.example/credits",
@@ -164,7 +164,7 @@ test("用户自定义的同名模板优先于内置模板", async () => {
     "      unit: C",
     "balances:",
     "  openrouter:",
-    "    profile: openrouter",
+    "    template: openrouter",
   ].join("\n"));
   const fetcher = async () => new Response(JSON.stringify({ left: 9 }), { status: 200 });
   assert.equal(await requestBalance(dir, "openrouter", { baseUrl: "https://openrouter.ai/api/v1" }, fetcher), "C9");

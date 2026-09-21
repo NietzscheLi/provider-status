@@ -10,14 +10,14 @@
 
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { existsSync, readFileSync } from "node:fs";
-import { BUILTIN_PROFILES, getBuiltinProviderIds, isBuiltinProfile } from "../builtin.ts";
+import { BUILTIN_TEMPLATES, getBuiltinProviderIds, isBuiltinTemplate } from "../builtin.ts";
 import {
 	editConfigDocument,
 	overwriteConfigFile,
-	profileExists,
 	readSectionEntries,
 	removeEntry,
 	restoreOrphanEntry,
+	templateExists,
 	upsertEntry,
 } from "../usage-edit.ts";
 import { configFingerprint, serializeUsageConfig } from "../usage-store.ts";
@@ -31,7 +31,7 @@ import { padLabel, showOptionPicker, showPersistentShortcutMenu, type MenuCursor
 
 function describeEntry(entry: JsonObject | undefined): string {
 	if (!entry || Object.keys(entry).length === 0) return "(未配置)";
-	if (typeof entry.profile === "string" && entry.profile) return `profile: ${entry.profile}`;
+	if (typeof entry.template === "string" && entry.template) return `模板: ${entry.template}`;
 	const request = entry.request;
 	const url = request && typeof request === "object" && typeof (request as JsonObject).url === "string"
 		? String((request as JsonObject).url)
@@ -63,7 +63,7 @@ function entrySummary(entry: JsonObject | undefined): string[] {
 		const keys = Object.keys(credentials as JsonObject).filter((key) => (credentials as JsonObject)[key]);
 		if (keys.length > 0) lines.push(`  Credentials: ${keys.join(", ")}（值已掩码）`);
 	}
-	if (typeof entry.profile === "string" && entry.profile) lines.push(`  模板: ${entry.profile}（provider 同名字段覆盖模板）`);
+	if (typeof entry.template === "string" && entry.template) lines.push(`  模板: ${entry.template}（provider 同名字段覆盖模板）`);
 	if (lines.length === 0) lines.push("  自定义条目：按 Enter 打开编辑器查看");
 	return lines;
 }
@@ -91,7 +91,7 @@ function notifyError(ctx: ExtensionCommandContext, prefix: string, error: unknow
 interface DashboardState {
 	balances: Record<string, JsonObject>;
 	subscriptions: Record<string, JsonObject>;
-	profiles: Record<string, JsonObject>;
+	templates: Record<string, JsonObject>;
 	orphans: Record<string, JsonObject>;
 	knownIds: Set<string>;
 	interval: number;
@@ -101,8 +101,8 @@ async function readDashboardState(agentDir: string, builtinIds: ReadonlySet<stri
 	return {
 		balances: readSectionEntries(agentDir, "balances"),
 		subscriptions: readSectionEntries(agentDir, "subscriptions"),
-		profiles: readSectionEntries(agentDir, "profiles"),
-		orphans: readSectionEntries(agentDir, "orphanBalances"),
+		templates: readSectionEntries(agentDir, "templates"),
+		orphans: readSectionEntries(agentDir, "orphans"),
 		knownIds: readKnownProviderIds(modelsPath(agentDir), builtinIds),
 		interval: refreshInterval(readConfig(agentDir)),
 	};
@@ -114,20 +114,20 @@ export async function runUsageDashboard(ctx: ExtensionCommandContext, agentDir: 
 	while (true) {
 		const state = await readDashboardState(agentDir, builtinIds);
 		const rows: MenuRow[] = [
-			{ id: "balances", label: `${padLabel("余额配置", 14)}${Object.keys(state.balances).length} 项已配置` },
-			{ id: "subscriptions", label: `${padLabel("订阅配置", 14)}${Object.keys(state.subscriptions).length} 项` },
-			{ id: "profiles", label: `${padLabel("余额模板", 14)}${Object.keys(state.profiles).length} 个` },
+			{ id: "balances", label: `${padLabel("余额配置", 14)}${Object.keys(state.balances).length} 项已配置`, searchText: "余额配置 balances" },
+			{ id: "subscriptions", label: `${padLabel("订阅配置", 14)}${Object.keys(state.subscriptions).length} 项`, searchText: "订阅配置 subscriptions" },
+			{ id: "templates", label: `${padLabel("余额模板", 14)}${Object.keys(state.templates).length} 个`, searchText: "余额模板 templates" },
 			...(Object.keys(state.orphans).length > 0
-				? [{ id: "orphans", label: `${padLabel("隔离条目", 14)}${Object.keys(state.orphans).length} 项待处理` }]
+				? [{ id: "orphans", label: `${padLabel("隔离条目", 14)}${Object.keys(state.orphans).length} 项待处理`, searchText: "隔离条目 orphans" }]
 				: []),
-			{ id: "refresh", label: `${padLabel("刷新间隔", 14)}${state.interval} 分钟` },
-			{ id: "raw", label: `${padLabel("原始 YAML", 14)}直接编辑 usage-config.yaml` },
+			{ id: "refresh", label: `${padLabel("刷新间隔", 14)}${state.interval} 分钟`, searchText: "刷新间隔 refreshInterval" },
+			{ id: "raw", label: `${padLabel("原始 YAML", 14)}直接编辑 usage-config.yaml`, searchText: "原始 YAML usage-config.yaml" },
 			{ id: "quit", label: "退出" },
 		];
 
 		const action = await showPersistentShortcutMenu<"quit">(
 			ctx,
-			"usage-config",
+			"usage-config.yaml",
 			"",
 			rows,
 			cursor,
@@ -136,12 +136,12 @@ export async function runUsageDashboard(ctx: ExtensionCommandContext, agentDir: 
 				getContext: () => `已配置余额 ${Object.keys(state.balances).length} / ${state.knownIds.size} 个已知 provider`,
 				getDetailLines: (row) => {
 					switch (row?.id) {
-						case "balances": return ["  单个 provider 的余额查询配置（request/extractor 引擎），可绑定模板复用请求定义"];
-						case "subscriptions": return ["  按内置适配器查询套餐用量；凭据默认走 pi 运行时解析"];
-						case "profiles": return ["  模板（profiles 段）：provider 绑定后只需覆盖差异字段"];
-						case "orphans": return ["  models.json 中已不存在的 provider；可恢复到 balances 或彻底删除"];
-						case "refresh": return ["  后台刷新间隔；条目可用 request.timeoutSeconds 覆盖单次请求超时"];
-						case "raw": return ["  直接编辑 YAML 源文件；保存时校验指纹，避免覆盖外部修改"];
+						case "balances": return ["  balances — 单个 provider 的余额查询配置（request/extractor 引擎），可绑定模板复用请求定义"];
+						case "subscriptions": return ["  subscriptions — 按内置适配器查询套餐用量；凭据默认走 pi 运行时解析"];
+						case "templates": return ["  templates — 可复用模板；provider 用 template 绑定后只需覆盖差异字段"];
+						case "orphans": return ["  orphans — models.json 中已不存在的 provider；可恢复到 balances 或彻底删除"];
+						case "refresh": return ["  refreshInterval — 后台刷新间隔（分钟）；条目可用 request.timeoutSeconds 覆盖单次请求超时"];
+						case "raw": return ["  usage-config.yaml — 直接编辑 YAML 源文件；保存时校验指纹，避免覆盖外部修改"];
 						default: return [];
 					}
 				},
@@ -167,8 +167,8 @@ export async function runUsageDashboard(ctx: ExtensionCommandContext, agentDir: 
 			case "subscriptions":
 				await openSubscriptions(ctx, agentDir, builtinIds);
 				break;
-			case "profiles":
-				await openProfiles(ctx, agentDir);
+			case "templates":
+				await openTemplates(ctx, agentDir);
 				break;
 			case "orphans":
 				await openOrphans(ctx, agentDir);
@@ -197,7 +197,7 @@ async function openBalances(ctx: ExtensionCommandContext, agentDir: string, buil
 		const available = [...known].filter((id) => !(id in balances)).sort();
 		const rows: MenuRow[] = [
 			{ id: NEW_ROW, label: "＋ 新建余额配置", searchText: "新建 新建余额配置" },
-			...configured.map((id) => ({ id, label: `${padLabel(id, 28)}${describeEntry(balances[id])}`, searchText: id })),
+			...configured.map((id) => ({ id, label: `${padLabel(id, 24)}${describeEntry(balances[id])}`, searchText: `${id}\n${describeEntry(balances[id])}` })),
 		];
 		const action = await showPersistentShortcutMenu<"new" | "delete">(
 			ctx,
@@ -261,7 +261,7 @@ async function openSubscriptions(ctx: ExtensionCommandContext, agentDir: string,
 		const available = [...known].filter((id) => !(id in subscriptions)).sort();
 		const rows: MenuRow[] = [
 			{ id: NEW_ROW, label: "＋ 新建订阅配置", searchText: "新建 新建订阅配置" },
-			...configured.map((id) => ({ id, label: `${padLabel(id, 28)}${describeSubscription(subscriptions[id])}`, searchText: id })),
+			...configured.map((id) => ({ id, label: `${padLabel(id, 24)}${describeSubscription(subscriptions[id])}`, searchText: `${id}\n${describeSubscription(subscriptions[id])}` })),
 		];
 		const action = await showPersistentShortcutMenu<"new" | "delete">(
 			ctx,
@@ -324,14 +324,14 @@ async function openSubscriptions(ctx: ExtensionCommandContext, agentDir: string,
 	}
 }
 
-async function openProfiles(ctx: ExtensionCommandContext, agentDir: string): Promise<void> {
+async function openTemplates(ctx: ExtensionCommandContext, agentDir: string): Promise<void> {
 	const cursor: MenuCursor = { index: 0 };
 	while (true) {
-		const profiles = readSectionEntries(agentDir, "profiles");
-		const names = Object.keys(profiles).sort();
+		const templates = readSectionEntries(agentDir, "templates");
+		const names = Object.keys(templates).sort();
 		const rows: MenuRow[] = [
 			{ id: NEW_ROW, label: "＋ 新建模板", searchText: "新建 新建模板" },
-			...names.map((name) => ({ id: name, label: `${padLabel(name, 28)}${describeEntry(profiles[name])}`, searchText: name })),
+			...names.map((name) => ({ id: name, label: `${padLabel(name, 24)}${describeEntry(templates[name])}`, searchText: `${name}\n${describeEntry(templates[name])}` })),
 		];
 		const action = await showPersistentShortcutMenu<"new" | "delete">(
 			ctx,
@@ -342,7 +342,7 @@ async function openProfiles(ctx: ExtensionCommandContext, agentDir: string): Pro
 			[{ input: "n", shortcut: "new" }, { input: "d", shortcut: "delete" }],
 			{
 				getContext: () => `${names.length} 个模板`,
-				getDetailLines: (row) => row && row.id !== NEW_ROW ? entrySummary(profiles[row.id]) : ["  模板定义可复用的请求与提取规则；provider 绑定后只需覆盖差异字段"],
+				getDetailLines: (row) => row && row.id !== NEW_ROW ? entrySummary(templates[row.id]) : ["  templates.<id> — 模板定义可复用的请求与提取规则；provider 用 template 绑定后只需覆盖差异字段"],
 				emptyLabel: "尚无余额模板",
 				hints: [
 					{ key: "↑↓", label: "选择" },
@@ -351,12 +351,12 @@ async function openProfiles(ctx: ExtensionCommandContext, agentDir: string): Pro
 					{ key: "d", label: "删除" },
 					{ key: "Esc", label: "返回" },
 				],
-				helpLines: ["模板存放在 profiles 段；provider 绑定模板后，同名字段以 provider 自身为准。", "有同名内置模板（如 openrouter）时，新建 provider 余额会自动预绑定。"],
+				helpLines: ["模板存放在 templates 段；provider 用 template 绑定后，同名字段以 provider 自身为准。", "有同名内置模板（如 openrouter）时，新建 provider 余额会自动预绑定。"],
 			},
 		);
 		if (action.type === "cancel") return;
 		if (action.type === "shortcut" && action.shortcut === "new") {
-			await createProfile(ctx, agentDir, profiles);
+			await createTemplate(ctx, agentDir, templates);
 			continue;
 		}
 		if (action.type === "shortcut" && action.shortcut === "delete") {
@@ -367,7 +367,7 @@ async function openProfiles(ctx: ExtensionCommandContext, agentDir: string): Pro
 			}
 			if (await ctx.ui.confirm("删除模板", selected.id)) {
 				try {
-					await removeEntry(agentDir, "profiles", selected.id);
+					await removeEntry(agentDir, "templates", selected.id);
 				} catch (error) {
 					notifyError(ctx, "写入失败", error);
 				}
@@ -376,24 +376,24 @@ async function openProfiles(ctx: ExtensionCommandContext, agentDir: string): Pro
 		}
 		if (action.type !== "pick") continue;
 		if (action.id === NEW_ROW) {
-			await createProfile(ctx, agentDir, profiles);
+			await createTemplate(ctx, agentDir, templates);
 			continue;
 		}
-		await editStoredBalanceEntry(ctx, agentDir, "profiles", action.id, profiles[action.id], true);
+		await editStoredBalanceEntry(ctx, agentDir, "templates", action.id, templates[action.id], true);
 	}
 }
 
-async function createProfile(ctx: ExtensionCommandContext, agentDir: string, profiles: Record<string, JsonObject>): Promise<void> {
-	const name = await ctx.ui.input("新模板 ID（将创建 profiles.<id>）", "");
+async function createTemplate(ctx: ExtensionCommandContext, agentDir: string, templates: Record<string, JsonObject>): Promise<void> {
+	const name = await ctx.ui.input("新模板 ID（将创建 templates.<id>）", "");
 	if (name === undefined) return;
 	const trimmed = name.trim();
 	if (!trimmed) return;
-	if (profiles[trimmed]) {
+	if (templates[trimmed]) {
 		void ctx.ui.notify(`模板 ${trimmed} 已存在`, "warning");
 		return;
 	}
 	try {
-		await upsertEntry(agentDir, "profiles", trimmed, {});
+		await upsertEntry(agentDir, "templates", trimmed, {});
 	} catch (error) {
 		notifyError(ctx, "写入失败", error);
 	}
@@ -402,10 +402,10 @@ async function createProfile(ctx: ExtensionCommandContext, agentDir: string, pro
 async function openOrphans(ctx: ExtensionCommandContext, agentDir: string): Promise<void> {
 	const cursor: MenuCursor = { index: 0 };
 	while (true) {
-		const orphans = readSectionEntries(agentDir, "orphanBalances");
+		const orphans = readSectionEntries(agentDir, "orphans");
 		const ids = Object.keys(orphans).sort();
 		if (ids.length === 0) return;
-		const rows: MenuRow[] = ids.map((id) => ({ id, label: `${padLabel(id, 28)}${describeEntry(orphans[id])}`, searchText: id }));
+		const rows: MenuRow[] = ids.map((id) => ({ id, label: `${padLabel(id, 24)}${describeEntry(orphans[id])}`, searchText: `${id}\n${describeEntry(orphans[id])}` }));
 		const action = await showPersistentShortcutMenu<"delete">(
 			ctx,
 			"隔离条目",
@@ -432,7 +432,7 @@ async function openOrphans(ctx: ExtensionCommandContext, agentDir: string): Prom
 			if (!selected) continue;
 			if (await ctx.ui.confirm("彻底删除隔离条目", selected.id)) {
 				try {
-					await removeEntry(agentDir, "orphanBalances", selected.id);
+					await removeEntry(agentDir, "orphans", selected.id);
 				} catch (error) {
 					notifyError(ctx, "写入失败", error);
 				}
@@ -451,9 +451,9 @@ async function openOrphans(ctx: ExtensionCommandContext, agentDir: string): Prom
 			if (choice.id === "restore") {
 				await restoreOrphanEntry(agentDir, id);
 			} else if (choice.id === "delete") {
-				if (await ctx.ui.confirm("彻底删除隔离条目", id)) await removeEntry(agentDir, "orphanBalances", id);
+				if (await ctx.ui.confirm("彻底删除隔离条目", id)) await removeEntry(agentDir, "orphans", id);
 			} else {
-				await editStoredBalanceEntry(ctx, agentDir, "orphanBalances", id, orphans[id], false);
+				await editStoredBalanceEntry(ctx, agentDir, "orphans", id, orphans[id], false);
 			}
 		} catch (error) {
 			void ctx.ui.notify(error instanceof Error ? error.message : String(error), "warning");
@@ -467,11 +467,11 @@ async function editRefreshInterval(ctx: ExtensionCommandContext, agentDir: strin
 	const trimmed = value.trim();
 	try {
 		await editConfigDocument(agentDir, (doc) => {
-			if (!trimmed) doc.delete("refreshIntervalMinutes");
+			if (!trimmed) doc.delete("refreshInterval");
 			else {
 				const parsed = Number(trimmed);
 				if (!Number.isFinite(parsed) || parsed < 1) throw new Error("刷新间隔需要 >= 1 的数字");
-				doc.set("refreshIntervalMinutes", parsed);
+				doc.set("refreshInterval", parsed);
 			}
 		});
 	} catch (error) {
@@ -481,7 +481,7 @@ async function editRefreshInterval(ctx: ExtensionCommandContext, agentDir: strin
 
 async function editRawYaml(ctx: ExtensionCommandContext, agentDir: string): Promise<void> {
 	const path = configPath(agentDir);
-	const before = existsSync(path) ? readFileSync(path, "utf8") : serializeUsageConfig({ profiles: {}, balances: {}, subscriptions: {} });
+	const before = existsSync(path) ? readFileSync(path, "utf8") : serializeUsageConfig({ templates: {}, balances: {}, subscriptions: {} });
 	const fingerprint = configFingerprint(agentDir);
 	const text = await ctx.ui.editor("usage-config.yaml（原始 YAML）", before);
 	if (text === undefined) return;
@@ -495,20 +495,20 @@ async function editRawYaml(ctx: ExtensionCommandContext, agentDir: string): Prom
 async function editStoredBalanceEntry(
 	ctx: ExtensionCommandContext,
 	agentDir: string,
-	section: "balances" | "profiles" | "orphanBalances",
+	section: "balances" | "templates" | "orphans",
 	id: string,
 	existing: JsonObject | undefined,
-	isProfile: boolean,
+	isTemplate: boolean,
 ): Promise<void> {
 	const draft: JsonObject = structuredClone(existing ?? {});
 	// 模板选择器：文件里的模板 + 内置模板（同名自定义优先，仅未覆盖的内置模板标注（内置））。
-	const fileProfileNames = Object.keys(readSectionEntries(agentDir, "profiles")).sort();
-	const profileNames = [...new Set([...fileProfileNames, ...Object.keys(BUILTIN_PROFILES)])].sort();
-	const builtinOnlyProfileNames = Object.keys(BUILTIN_PROFILES).filter((name) => !fileProfileNames.includes(name));
-	const outcome = await editBalanceEntry(ctx, `${isProfile ? "模板" : "余额配置"}: ${id}`, draft, { showProfile: !isProfile, profileNames, builtinOnlyProfileNames });
+	const fileTemplateNames = Object.keys(readSectionEntries(agentDir, "templates")).sort();
+	const templateNames = [...new Set([...fileTemplateNames, ...Object.keys(BUILTIN_TEMPLATES)])].sort();
+	const builtinOnlyTemplateNames = Object.keys(BUILTIN_TEMPLATES).filter((name) => !fileTemplateNames.includes(name));
+	const outcome = await editBalanceEntry(ctx, `${isTemplate ? "模板" : "余额配置"}: ${id}`, draft, { showTemplate: !isTemplate, templateNames, builtinOnlyTemplateNames });
 	if (outcome.action === "cancel") return;
-	if (!isProfile && typeof draft.profile === "string" && draft.profile && !profileExists(agentDir, draft.profile) && !isBuiltinProfile(draft.profile)) {
-		await ctx.ui.notify(`模板 ${draft.profile} 不存在，已取消保存；可先在 [余额模板] 中新建`, "warning");
+	if (!isTemplate && typeof draft.template === "string" && draft.template && !templateExists(agentDir, draft.template) && !isBuiltinTemplate(draft.template)) {
+		await ctx.ui.notify(`模板 ${draft.template} 不存在，已取消保存；可先在 [余额模板] 中新建`, "warning");
 		return;
 	}
 	try {
@@ -536,7 +536,7 @@ async function createBalanceEntry(
 	}
 	const choice = await showOptionPicker(ctx, "新建 Provider 余额配置（键需与 provider ID 大小写完全一致）", candidates.map((id) => ({ id, label: id })), candidates[0]!);
 	if (!choice) return;
-	const draft: JsonObject = isBuiltinProfile(choice.id) ? { profile: choice.id } : {};
+	const draft: JsonObject = isBuiltinTemplate(choice.id) ? { template: choice.id } : {};
 	await editStoredBalanceEntry(ctx, agentDir, "balances", choice.id, structuredClone(draft), false);
 }
 
