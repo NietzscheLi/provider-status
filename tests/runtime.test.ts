@@ -21,6 +21,9 @@ const CONFIG = [
   "      url: https://example.invalid/balance",
   "    extractor:",
   "      remainingPath: remaining",
+  "subscriptions:",
+  "  og:",
+  "    adapter: opencode-go",
 ].join("\n");
 
 function setup() {
@@ -35,6 +38,8 @@ function setup() {
   const fetcher = (_input: string | URL, init?: RequestInit): Promise<Response> => {
     fetchCount++;
     if (init?.signal) abortedSignals.push(init.signal);
+    if (String(_input).includes("opencode.ai"))
+      return Promise.resolve(new Response(JSON.stringify({ usage: { rolling: { percent: 90, resetsAt: new Date(Date.now() + 2 * 3_600_000).toISOString() } } }), { status: 200 }));
     if (failFetch) return Promise.resolve(new Response("boom", { status: 500 }));
     if (hangFetch) return new Promise<Response>(() => undefined);
     return Promise.resolve(new Response(JSON.stringify({ remaining: 9 }), { status: 200 }));
@@ -42,14 +47,15 @@ function setup() {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = fetcher as typeof fetch;
 
-  const eventHandlers: ((event: unknown, ctx: unknown) => void)[] = [];
+  type Handler = (event: unknown, ctx: unknown) => void;
+  const handlers = new Map<string, Handler[]>();
   const commands = new Map<string, { handler: (args: string, ctx: unknown) => Promise<void> }>();
   const statuses = new Map<string, string | undefined>();
   const notifications: string[] = [];
   let authCalls = 0;
   providerStatusExtension({
     registerCommand: (name: string, def: { handler: (args: string, ctx: unknown) => Promise<void> }) => commands.set(name, def),
-    on: (_name: string, handler: (event: unknown, ctx: unknown) => void) => eventHandlers.push(handler),
+    on: (name: string, handler: Handler) => handlers.set(name, [...(handlers.get(name) ?? []), handler]),
     events: { on: () => undefined },
   } as never);
 
@@ -68,7 +74,11 @@ function setup() {
   const settle = () => new Promise((r) => setTimeout(r, 50));
 
   return {
-    eventHandlers,
+    handler: (name: string): Handler => {
+      const list = handlers.get(name);
+      assert.ok(list && list.length > 0, `no handler registered for ${name}`);
+      return list[0]!;
+    },
     commands,
     statuses,
     notifications,
@@ -90,12 +100,12 @@ test("缓存优先：新鲜结果直接上屏，不解析认证也不发请求",
   const harness = setup();
   try {
     // 注册顺序：turn_start, turn_end, model_select, session_start, session_shutdown
-    const modelSelectHandler = harness.eventHandlers[2];
+    const modelSelectHandler = harness.handler("model_select");
     const ctx = harness.makeCtx("alpha");
     modelSelectHandler({}, ctx);
     await harness.settle();
     assert.equal(harness.getFetchCount(), 1);
-    assert.equal(harness.statuses.get("balance"), `${BALANCE_ICON} 9`);
+    assert.equal(harness.statuses.get("balance"), `${BALANCE_ICON} 9 left`);
     assert.equal(harness.getAuthCalls(), 1);
 
     // 再次 model_select：缓存新鲜，直接复用，认证解析与 fetch 都不再发生。
@@ -103,7 +113,7 @@ test("缓存优先：新鲜结果直接上屏，不解析认证也不发请求",
     await harness.settle();
     assert.equal(harness.getFetchCount(), 1);
     assert.equal(harness.getAuthCalls(), 1);
-    assert.equal(harness.statuses.get("balance"), `${BALANCE_ICON} 9`);
+    assert.equal(harness.statuses.get("balance"), `${BALANCE_ICON} 9 left`);
   } finally {
     harness.restore();
   }
@@ -112,7 +122,7 @@ test("缓存优先：新鲜结果直接上屏，不解析认证也不发请求",
 test("失败退避：事件触发的刷新在退避期内不再击打端点，强制刷新不受限", async () => {
   const harness = setup();
   try {
-    const modelSelectHandler = harness.eventHandlers[2];
+    const modelSelectHandler = harness.handler("model_select");
     const ctx = harness.makeCtx("alpha");
     harness.setFailFetch(true);
     modelSelectHandler({}, ctx);
@@ -137,7 +147,7 @@ test("失败退避：事件触发的刷新在退避期内不再击打端点，�
 test("切换 provider 中止上一个在途请求（TUN 黑洞场景不再挂满超时时长）", async () => {
   const harness = setup();
   try {
-    const modelSelectHandler = harness.eventHandlers[2];
+    const modelSelectHandler = harness.handler("model_select");
     const ctxA = harness.makeCtx("alpha");
     harness.setHangFetch(true);
     modelSelectHandler({}, ctxA);
@@ -152,6 +162,43 @@ test("切换 provider 中止上一个在途请求（TUN 黑洞场景不再挂满
     const signals = harness.getAbortedSignals();
     assert.ok(signals.length >= 2);
     assert.equal(signals[0].aborted, true, "previous in-flight request should be aborted");
+  } finally {
+    harness.restore();
+  }
+});
+
+test("未配置余额/订阅的 provider 两个键都不占位", async () => {
+  const harness = setup();
+  try {
+    const modelSelectHandler = harness.handler("model_select");
+    const ctx = harness.makeCtx("gamma");
+    modelSelectHandler({}, ctx);
+    await harness.settle();
+    // 查询失败（未配置）也不能退化成 `󰄔 --` 这种像余额型的占位芯片。
+    assert.equal(harness.statuses.get("balance"), undefined);
+    assert.equal(harness.statuses.get("quota"), undefined);
+    assert.match(harness.statuses.get("tps")!, /tok\/s/);
+  } finally {
+    harness.restore();
+  }
+});
+
+test("订阅芯片低额度时带重置倒计时，缓存文本与通知保持不带倒计时", async () => {
+  const harness = setup();
+  try {
+    const modelSelectHandler = harness.handler("model_select");
+    const ctx = harness.makeCtx("og");
+    modelSelectHandler({}, ctx);
+    await harness.settle();
+    assert.equal(harness.statuses.get("balance"), undefined);
+    // 已用 90% → 剩余 10% < 20%：追加重置倒计时（符号与倒计时间留空格）。
+    assert.match(harness.statuses.get("quota")!, /^5h 90% ↺ (2h|1h59m)$/);
+
+    // 通知文案走缓存里的稳定文本，不带倒计时（倒计时是状态栏的即时重排）。
+    await harness.commands.get("usage")!.handler("status", ctx);
+    const notification = harness.notifications.at(-1)!;
+    assert.match(notification, /Usage: og 5h 90%/);
+    assert.ok(!notification.includes("↺"), notification);
   } finally {
     harness.restore();
   }

@@ -1,7 +1,6 @@
-import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import { formatUsageState } from "./render.ts";
+import { formatUsageState, renderQuotaText } from "./render.ts";
 import { UsageService } from "./usage-service.ts";
 import { readConfig, refreshInterval } from "./usage-config.ts";
 import { ensureBaseConfigFile } from "./usage-edit.ts";
@@ -23,6 +22,8 @@ const FAILURE_BACKOFF_MS = 30_000;
 // 余额芯片前缀图标，取自 pi-cc-extensions footer 同族（Nerd Fonts v3 MDI）：md-cash U+F0114，
 // 与该项目 footer 缓存芯片的 md-database 󰆼（U+F01BC）同族；tok/s 不带图标。
 const BALANCE_ICON = "\u{f0114}";
+// 倒计时是本地重排（不发请求），参照 pi-usage 的 60s 重渲染节奏。
+const COUNTDOWN_TICK_MS = 60_000;
 
 export default function providerStatusExtension(pi: ExtensionAPI): void {
 	const agentDir = getAgentDir();
@@ -40,6 +41,7 @@ export default function providerStatusExtension(pi: ExtensionAPI): void {
 	let refreshGeneration = 0;
 	let refreshController: AbortController | undefined;
 	let refreshTimer: ReturnType<typeof setTimeout> | undefined;
+	let countdownTimer: ReturnType<typeof setTimeout> | undefined;
 	const failureBackoff = new Map<string, number>();
 
 	const notifySafe = (ctx: ExtensionContext, message: string, level: "info" | "warning" | "error") => {
@@ -92,19 +94,35 @@ export default function providerStatusExtension(pi: ExtensionAPI): void {
 	/** 生成速度文案：数字在前、单位在后，不带图标（`42.7 tok/s`）。 */
 	const tpsText = (): string => (tps === undefined ? "-- tok/s" : `${tps.toFixed(1)} tok/s`);
 
+	// 状态栏去重：每秒级的 tps 刷新与 60s 的倒计时重排不该让 footer 无谓重绘。
+	const published = new Map<string, string | undefined>();
+	const publish = (ctx: ExtensionContext, key: string, value: string | undefined) => {
+		if (published.get(key) === value) return;
+		published.set(key, value);
+		ctx.ui.setStatus(key, value);
+	};
+
 	const update = (ctx: ExtensionContext) => {
 		try {
 			const state: UsageState | undefined = current ? service.get(current) : undefined;
-			const text = state ? formatUsageState(state) : "--";
-			// 订阅型与余额型分键发布，同一时刻只会有一个键有值。
-			if (current && service.kindOf(current) === "subscription") {
-				ctx.ui.setStatus("quota", text);
-				ctx.ui.setStatus("balance", undefined);
+			const kind = current ? service.kindOf(current) : undefined;
+			const value = state?.value;
+			// 窗口文本每次按当前时间重排：缓存里的 text 不含倒计时，否则重渲染会一直显示旧值。
+			const quotaText = value?.kind === "subscription" ? renderQuotaText(value.windows, value.maxWidth, Date.now()) : undefined;
+			const text = state ? formatUsageState(state, quotaText) : "--";
+			// 订阅型与余额型分键发布，同一时刻只会有一个键有值；未配置的 provider 不占位。
+			if (kind === "subscription") {
+				publish(ctx, "quota", text);
+				publish(ctx, "balance", undefined);
+			} else if (kind === "balance") {
+				publish(ctx, "balance", `${BALANCE_ICON} ${text}`);
+				publish(ctx, "quota", undefined);
 			} else {
-				ctx.ui.setStatus("balance", `${BALANCE_ICON} ${text}`);
-				ctx.ui.setStatus("quota", undefined);
+				publish(ctx, "quota", undefined);
+				publish(ctx, "balance", undefined);
 			}
-			ctx.ui.setStatus("tps", tpsText());
+			publish(ctx, "tps", tpsText());
+			scheduleCountdownTick(ctx, quotaText !== undefined && quotaText.includes("↺"));
 		} catch {
 			// stale ctx 或非 TUI 模式下忽略 UI 失败。
 		}
@@ -113,6 +131,23 @@ export default function providerStatusExtension(pi: ExtensionAPI): void {
 	const clearRefreshTimer = () => {
 		if (refreshTimer) clearTimeout(refreshTimer);
 		refreshTimer = undefined;
+	};
+
+	const clearCountdownTimer = () => {
+		if (countdownTimer) clearTimeout(countdownTimer);
+		countdownTimer = undefined;
+	};
+
+	/** 仅在文本含倒计时时挂每分钟的本地重渲染；不触发任何网络查询。 */
+	const scheduleCountdownTick = (ctx: ExtensionContext, active: boolean) => {
+		clearCountdownTimer();
+		if (!active) return;
+		countdownTimer = setTimeout(() => {
+			countdownTimer = undefined;
+			const latest = sessionCtx;
+			if (latest) update(latest);
+		}, COUNTDOWN_TICK_MS);
+		countdownTimer.unref?.();
 	};
 
 	/** 按刷新间隔调度的后台刷新（unref 的递归 setTimeout，不阻止进程退出）。 */
@@ -276,10 +311,12 @@ export default function providerStatusExtension(pi: ExtensionAPI): void {
 		refreshController?.abort();
 		refreshController = undefined;
 		clearRefreshTimer();
+		clearCountdownTimer();
 		failureBackoff.clear();
 		ctx.ui.setStatus("balance", undefined);
 		ctx.ui.setStatus("quota", undefined);
 		ctx.ui.setStatus("tps", undefined);
+		published.clear();
 	});
 }
 

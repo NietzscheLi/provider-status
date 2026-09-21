@@ -100,7 +100,7 @@ test("/balance update handler returns immediately while the balance request hang
     harness.release();
     await settle();
     assert.equal(harness.getFetchCount(), 1);
-    assert.equal(harness.statuses.get("balance"), `${BALANCE_ICON} 9`);
+    assert.equal(harness.statuses.get("balance"), `${BALANCE_ICON} 9 left`);
   } finally {
     harness.restore();
   }
@@ -117,7 +117,7 @@ test("/balance status reports current state without waiting for the request", as
 
     harness.release();
     await settle();
-    assert.equal(harness.statuses.get("balance"), `${BALANCE_ICON} 9`);
+    assert.equal(harness.statuses.get("balance"), `${BALANCE_ICON} 9 left`);
   } finally {
     harness.restore();
   }
@@ -126,19 +126,19 @@ test("/balance status reports current state without waiting for the request", as
 test("session_start background refresh does not throw unhandled rejections", async () => {
   const harness = setup(true);
   try {
-    const eventHandlers: ((event: unknown, ctx: unknown) => void)[] = [];
+    const handlers = new Map<string, ((event: unknown, ctx: unknown) => void)[]>();
     providerStatusExtension({
       registerCommand: () => undefined,
-      on: (_name: string, handler: (event: unknown, ctx: unknown) => void) => eventHandlers.push(handler),
+      on: (name: string, handler: (event: unknown, ctx: unknown) => void) => handlers.set(name, [...(handlers.get(name) ?? []), handler]),
       events: { on: () => undefined },
     } as never);
     // session_start 里的后台刷新遇到挂起的 fetch 也必须安静地等待，不能抛未处理拒绝。
-    // 按真实生命周期顺序触发：先会话事件，最后 shutdown（会中止在途请求并清理状态栏）。
-    const [shutdown] = eventHandlers.slice(-1);
-    for (const handler of eventHandlers.slice(0, -1)) handler({ timestamp: 0 }, harness.ctx);
+    // 按真实生命周期触发：先 session_start 启动刷新，最后 shutdown（会中止在途请求并清理状态栏）。
+    const run = (name: string) => { for (const handler of handlers.get(name) ?? []) handler({}, harness.ctx); };
+    run("session_start");
     await settle();
     assert.match(harness.statuses.get("balance")!, /refreshing/);
-    for (const handler of eventHandlers) if (handler === shutdown) handler({ timestamp: 0 }, harness.ctx);
+    run("session_shutdown");
     await settle();
     assert.equal(harness.statuses.get("balance"), undefined);
   } finally {

@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { parse as parseYaml } from "yaml";
-import { renderQuotaText } from "../render.ts";
+import { formatResetCountdown, renderQuotaText, RESET_COUNTDOWN_REMAINING_PCT } from "../render.ts";
 import {
 	defaultBaseUrl,
 	fetchSubscriptionUsage,
@@ -113,13 +113,49 @@ test("jwtAccountId 从 openai-codex token 的 JWT claim 取 chatgpt_account_id",
 	assert.equal(jwtAccountId("not-a-jwt"), undefined);
 });
 
-test("renderQuotaText 只展示窗口与百分比，超宽时只留 5h", () => {
+test("renderQuotaText 只展示窗口与百分比，超宽时逐级降级", () => {
 	const windows = [
 		{ label: "5h", percent: 15, resetsAt: "2026-01-07T05:00:00.000Z" },
 		{ label: "mo", percent: 3, resetsAt: "2026-02-01T00:00:00.000Z" },
 	];
 	assert.equal(renderQuotaText(windows, 100), "5h 15% · mo 3%");
 	assert.equal(renderQuotaText(windows, 10), "5h 15%");
+});
+
+test("formatResetCountdown 用复合单位，最多两位；过期或缺失返回 undefined", () => {
+	const now = Date.parse("2026-01-07T00:00:00.000Z");
+	assert.equal(formatResetCountdown("2026-01-08T04:00:00.000Z", now), "1d4h");
+	assert.equal(formatResetCountdown("2026-01-07T02:30:00.000Z", now), "2h30m");
+	assert.equal(formatResetCountdown("2026-01-07T00:45:00.000Z", now), "45m");
+	assert.equal(formatResetCountdown("2026-01-07T05:00:00.000Z", now), "5h");
+	// 已过期不给误导性的 `0m`；缺字段/非法值同样不显示。
+	assert.equal(formatResetCountdown("2026-01-06T00:00:00.000Z", now), undefined);
+	assert.equal(formatResetCountdown(undefined, now), undefined);
+	assert.equal(formatResetCountdown("not-a-date", now), undefined);
+});
+
+test("倒计时仅在剩余低于阈值时出现，且符号与倒计时之间留空格", () => {
+	const now = Date.parse("2026-01-07T00:00:00.000Z");
+	const low = [{ label: "5h", percent: 100 - RESET_COUNTDOWN_REMAINING_PCT + 1, resetsAt: "2026-01-07T02:30:00.000Z" }];
+	assert.equal(renderQuotaText(low, 100, now), "5h 81% ↺ 2h30m");
+	// 剩余恰好等于阈值（未低于）不显示倒计时。
+	const boundary = [{ label: "5h", percent: 100 - RESET_COUNTDOWN_REMAINING_PCT, resetsAt: "2026-01-07T02:30:00.000Z" }];
+	assert.equal(renderQuotaText(boundary, 100, now), "5h 80%");
+	// 不传 now 时永远不渲染倒计时（缓存文本与通知文案保持稳定）。
+	assert.equal(renderQuotaText(low, 100), "5h 81%");
+});
+
+test("超宽时先丢倒计时，再丢非 5h 窗口", () => {
+	const now = Date.parse("2026-01-07T00:00:00.000Z");
+	const windows = [
+		{ label: "5h", percent: 90, resetsAt: "2026-01-07T02:30:00.000Z" },
+		{ label: "mo", percent: 90, resetsAt: "2026-02-01T00:00:00.000Z" },
+	];
+	// 可见宽度：全窗口+倒计时 29 字，全窗口 15 字，5h+倒计时 14 字，5h 6 字。
+	assert.equal(renderQuotaText(windows, 100, now), "5h 90% ↺ 2h30m · mo 90% ↺ 25d");
+	assert.equal(renderQuotaText(windows, 15, now), "5h 90% · mo 90%");
+	assert.equal(renderQuotaText(windows, 14, now), "5h 90% ↺ 2h30m");
+	assert.equal(renderQuotaText(windows, 6, now), "5h 90%");
 });
 
 test("suggestAdapter 覆盖常见 provider ID", () => {
@@ -216,7 +252,7 @@ test("UsageService 按配置分派订阅/余额并记录 kind", async () => {
 	assert.equal(service.kindOf("relay"), "balance");
 	const relay = await service.refresh("relay", {});
 	assert.equal(relay.value?.kind, "balance");
-	assert.equal(relay.value?.text, "7");
+	assert.equal(relay.value?.text, "7 left");
 	const subscription = await service.refresh("opencode-go", { apiKey: "sk" });
 	assert.equal(subscription.value?.kind, "subscription");
 	assert.equal(subscription.value?.text, "5h 10%");

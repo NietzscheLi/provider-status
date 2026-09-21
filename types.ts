@@ -22,11 +22,16 @@ export interface BalanceValue {
 	text: string;
 }
 
-/** 订阅型结果：text 为已渲染的窗口文本（如 `5h 2% · wk 1%`）。 */
+/**
+ * 订阅型结果：text 为**不带倒计时**的稳定文本（如 `5h 2% · wk 1%`），供通知与回退使用；
+ * 状态栏每次按当前时间重排 windows（倒计时不能缓存）。
+ */
 export interface SubscriptionValue {
 	kind: "subscription";
 	text: string;
 	windows: UsageWindow[];
+	/** subscriptions.<id>.maxWidth 覆盖值（可见字符），未配置为 undefined。 */
+	maxWidth?: number;
 }
 
 export type UsageValue = BalanceValue | SubscriptionValue;

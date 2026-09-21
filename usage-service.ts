@@ -73,7 +73,8 @@ export class UsageService {
 		const subscription = objectAt(config.subscriptions?.[id], "");
 		if (subscription) return this.fetchSubscription(id, subscription, source, signal);
 		const text = await requestBalance(this.agentDir, id, source, this.fetcher, signal);
-		return { kind: "balance", text };
+		// 提取器语义始终是「剩余额度」，补限定词避免 `$6.53` 被误读为已花。
+		return { kind: "balance", text: `${text} left` };
 	}
 
 	private async fetchSubscription(id: string, entry: JsonObject, source: UsageSource, signal?: AbortSignal): Promise<UsageValue> {
@@ -95,10 +96,12 @@ export class UsageService {
 		});
 		if (windows.length === 0) throw new Error(`${label} returned no quota windows`);
 		const maxWidth = Number(entry.maxWidth);
+		const resolvedMaxWidth = Number.isFinite(maxWidth) && maxWidth > 0 ? maxWidth : undefined;
 		return {
 			kind: "subscription",
-			text: renderQuotaText(windows, Number.isFinite(maxWidth) && maxWidth > 0 ? maxWidth : undefined),
+			text: renderQuotaText(windows, resolvedMaxWidth),
 			windows,
+			maxWidth: resolvedMaxWidth,
 		};
 	}
 }

@@ -45,7 +45,7 @@ test("deduplicates concurrent refreshes and preserves stale value", async () => 
   const fetcher = async () => { calls++; await new Promise((r) => setTimeout(r, 5)); return new Response(JSON.stringify({ remaining: 7 }), { status: 200 }); };
   const service = new UsageService(dir, fetcher, () => 1000);
   const [a, b] = await Promise.all([service.refresh("demo", {}), service.refresh("demo", {})]);
-  assert.equal(calls, 1); assert.equal(a.value?.text, "7"); assert.equal(b.value?.text, "7");
+  assert.equal(calls, 1); assert.equal(a.value?.text, "7 left"); assert.equal(b.value?.text, "7 left");
 });
 
 test("failed requests are not cached as fresh; next refresh retries immediately", async () => {
@@ -61,7 +61,7 @@ test("failed requests are not cached as fresh; next refresh retries immediately"
   const retried = await service.refresh("demo", {});
   assert.equal(calls, 2);
   assert.equal(retried.error, undefined);
-  assert.equal(retried.value?.text, "7");
+  assert.equal(retried.value?.text, "7 left");
 });
 
 test("failure keeps the last success timestamp; stale success retries, fresh success does not", async () => {
@@ -72,13 +72,13 @@ test("failure keeps the last success timestamp; stale success retries, fresh suc
   const fetcher = async () => { calls++; if (calls === 1) return new Response(JSON.stringify({ remaining: 7 }), { status: 200 }); return new Response("boom", { status: 500 }); };
   const service = new UsageService(dir, fetcher, () => clock);
   const ok = await service.refresh("demo", {});
-  assert.equal(ok.value?.text, "7");
+  assert.equal(ok.value?.text, "7 left");
   // 新鲜成功期内不发请求，也不会产生错误状态。
   clock += 60_000;
   const fresh = await service.refresh("demo", {});
   assert.equal(calls, 1);
   assert.equal(fresh.error, undefined);
-  assert.equal(fresh.value?.text, "7");
+  assert.equal(fresh.value?.text, "7 left");
   // 成功时间超出刷新间隔后请求失败：保留旧 updatedAt，不把失败记为新鲜。
   clock += 240_001;
   const stale = await service.refresh("demo", {});
