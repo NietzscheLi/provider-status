@@ -9,7 +9,7 @@
 | 键 | 内容 | 示例 |
 |---|---|---|
 | `balance` | 余额型文案：提取器输出（语义始终是剩余额度）+ ` left`，前缀 md-cash 图标（Nerd Fonts v3 `U+F0114`） | `󰄔 $6.53 left` |
-| `quota` | 订阅型窗口文案：窗口 + 已用百分比；**剩余 <20% 的窗口**追加 `↺ 2h30m` 重置倒计时 | `5h 85% ↺ 2h30m · wk 3%` |
+| `quota` | 订阅型窗口文案：窗口 + 已用百分比；**窗口剩余低于其阈值**（默认 5h 80%、wk 40%、mo 30%，可用 `resetThresholds` 覆盖）时追加 `↺ 2h30m` 重置倒计时 | `5h 85% ↺ 2h30m · wk 20%` |
 | `tps` | 生成速度：只统计生成区间（首个内容块 → 最后一个 delta），数字在前、单位在后，不带图标 | `42.7 tok/s` |
 
 `tps` 是**生成区间速度**，不是整轮耗时平均：`message_update` 的 `text_start`/`thinking_start`/`toolcall_start` 开始计时，`text_delta`/`thinking_delta` 喂入时间滑动窗（默认 5s，带 provider 缓冲突发的跨度补偿），生成期间约 250ms 节流上屏；`message_end` 时用权威 `message.usage.output` 除以「首个内容块 → 最后一个 delta」的跨度定案——**TTFT/排队与工具执行时间不在分母里**（`turn_end` 口径会把两者都算进去，带工具的一轮会明颉偏低）。provider 累计上报 `usage.output` 时用其增量，否则按词法估算（英文按词、CJK 按字符）。超过 5 分钟没有新数据、或从未产生过速度时显示 `-- tok/s`。`session_shutdown` 时三个键都会被清除；`/usage status` 的提示里显示同一份 `tok/s` 文案。
@@ -139,7 +139,7 @@ orphans: {}
 | `kimi` | `kimi-coding` | `GET api.kimi.com/coding/v1/usages` | Bearer（pi 解析的 kimi-coding 凭据） | 最短 rolling 窗口(300min=5h) + weekly 汇总 |
 
 - `ollama-cloud` 与 `commandcode` **不是 pi 内置 provider**，需先安装对应 provider 包（`pi-ollama-cloud`/`pi-ollama-cloud-provider` 注册 `ollama-cloud`；`pi-commandcode-provider`/`@bacnh85/pi-commandcode` 注册 `commandcode`）；`opencode-go`/`zai`/`zai-coding-cn`/`openai-codex`/`kimi-coding` 是 pi 内置。
-- 条目可覆盖 `label`（短标签，用于 TUI 与错误信息，不出现在状态栏文本）、`request.baseUrl`（区域端点）、`request.timeoutSeconds`（默认 15）、`request.headers`、`maxWidth`（状态栏宽度预算，默认 48）、`credentials`；余额与订阅统一使用 `request.*` / `credentials.*` 命名，TUI 表单与运行时字段一一对应（由 `tests/tui-coverage.test.ts` 守护）；
+- 条目可覆盖 `label`（短标签，用于 TUI 与错误信息，不出现在状态栏文本）、`request.baseUrl`（区域端点）、`request.timeoutSeconds`（默认 15）、`request.headers`、`maxWidth`（状态栏宽度预算，默认 48）、`resetThresholds`（按窗口的倒计时阈值，见下）、`credentials`；余额与订阅统一使用 `request.*` / `credentials.*` 命名，TUI 表单与运行时字段一一对应（由 `tests/tui-coverage.test.ts` 守护）；
 - 凭据默认由 pi 运行时解析（与聊天请求同一套 `models.json`/OAuth），条目内 `credentials` 只用于覆盖特殊情况；
 - **不使用**浏览器 cookie、HTML 抓取、旁路凭据文件或自建 token refresh。
 
@@ -151,7 +151,16 @@ orphans: {}
 
 ## 状态栏文本渲染
 
-订阅型文本展示窗口与已用百分比（`5h 15% · wk 3% · mo 0%`），不带 provider 前缀；**剩余低于 20% 的窗口**才追加重置倒计时（`5h 85% ↺ 2h30m`，符号与倒计时间留一个空格，复合单位最多两位：`45m` / `2h30m` / `1d4h`），倒计时由每分钟的本地重渲染更新，不触发网络查询。文本中不出现逗号与尾部 `(...)`，超宽（默认 48 可见字符，可用 `maxWidth` 覆盖）时逐级降级：全窗口+倒计时 → 全窗口 → 5h+倒计时 → 5h 窗口。余额型文本是提取器的输出（可带 `unit`）加 ` left` 限定词，统一加 md-cash 前缀图标；生成速度文本为数字在前、单位在后且不带图标。未配置余额/订阅的 provider 不占位（两个键都清空）。
+订阅型文本展示窗口与已用百分比（`5h 15% · wk 3% · mo 0%`），不带 provider 前缀；**窗口剩余低于其阈值**时才追加重置倒计时（`5h 85% ↺ 2h30m`，符号与倒计时间留一个空格，复合单位最多两位：`45m` / `2h30m` / `1d4h`），倒计时由每分钟的本地重渲染更新，不触发网络查询。阈值默认按窗口为 `5h: 80`、`wk: 40`、`mo: 30`（语义对齐 pi-cloud-quota：剩余低于该值就提示），未列出的标签（如 GLM 的 `1h`、Kimi 的 `150m`）用 30；可用 `subscriptions.<id>.resetThresholds` 按窗口覆盖（在默认表上合并，写成 `0` 即关闭该窗口的倒计时）：
+
+```yaml
+subscriptions:
+  commandcode:
+    adapter: commandcode
+    resetThresholds: { '5h': 50, wk: 30 }   # 其余标签仍用默认值
+```
+
+文本中不出现逗号与尾部 `(...)`，超宽（默认 48 可见字符，可用 `maxWidth` 覆盖）时逐级降级：全窗口+倒计时 → 全窗口 → 5h+倒计时 → 5h 窗口。余额型文本是提取器的输出（可带 `unit`）加 ` left` 限定词，统一加 md-cash 前缀图标；生成速度文本为数字在前、单位在后且不带图标。未配置余额/订阅的 provider 不占位（两个键都清空）。
 
 ## TUI 编辑面板（/usage config）
 
@@ -163,7 +172,7 @@ orphans: {}
 - 列表顶部一行上下文，按 **?** 打开完整快捷键与字段说明浮层。
 
 - `balances`：为每个 provider 绑定 template 或覆盖 `request.*` / `extractor.*` / `extractor.validity.*` / `credentials.*`；键与 provider ID 大小写完全一致；凭据掩码显示，输入 `-` 清除；
-- `subscriptions`：选择 `adapter` 并覆盖 `label` / `request.baseUrl` / 超时 / `maxWidth` / 附加请求头 / 凭据；
+- `subscriptions`：选择 `adapter` 并覆盖 `label` / `request.baseUrl` / 超时 / `maxWidth` / `resetThresholds` / 附加请求头 / 凭据；
 - `templates`：模板增删改；条目用 `template` 绑定；内置模板（`openrouter`）无需定义即可绑定，同名自定义优先；
 - `orphans`：隔离条目的恢复（节点移动，保留原注释）与彻底删除；
 - `refreshInterval`：刷新间隔（留空恢复默认 5）。

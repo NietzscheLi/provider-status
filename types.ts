@@ -32,6 +32,8 @@ export interface SubscriptionValue {
 	windows: UsageWindow[];
 	/** subscriptions.<id>.maxWidth 覆盖值（可见字符），未配置为 undefined。 */
 	maxWidth?: number;
+	/** 按窗口的倒计时阈值（剩余 %），已合并默认表。 */
+	resetThresholds?: Record<string, number>;
 }
 
 export type UsageValue = BalanceValue | SubscriptionValue;

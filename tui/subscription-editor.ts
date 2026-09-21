@@ -8,6 +8,7 @@
 // 草稿是 subscriptions.<id> 的 JsonObject 树（深拷贝）；"原始 JSON" 行兜底未列出的字段。
 
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import { DEFAULT_RESET_THRESHOLDS, FALLBACK_RESET_THRESHOLD } from "../render.ts";
 import { SUBSCRIPTION_ADAPTERS, adapterMeta, isSubscriptionAdapter } from "../subscription.ts";
 import { headersToPairs, isRecord, maskSecret, parseNumberInput, setValueAtPath, stableStringify, valueAtPath } from "../usage-draft.ts";
 import type { JsonObject } from "../types.ts";
@@ -28,7 +29,7 @@ interface SubscriptionSection {
 
 const SUBSCRIPTION_SECTIONS: readonly SubscriptionSection[] = [
 	{ id: "connection", label: "连接", keyPrefix: "request.*", fields: ["adapter", "request.baseUrl", "request.timeoutSeconds", "request.headers"] },
-	{ id: "display", label: "显示", keyPrefix: "label / maxWidth", fields: ["label", "maxWidth"] },
+	{ id: "display", label: "显示", keyPrefix: "label / maxWidth / resetThresholds", fields: ["label", "maxWidth", "resetThresholds"] },
 	{ id: "credentials", label: "凭据", keyPrefix: "credentials.*", fields: ["credentials.apiKey", "credentials.accessToken"] },
 ];
 
@@ -39,6 +40,7 @@ const SUBSCRIPTION_FIELD_HELP: Record<string, string> = {
 	"request.timeoutSeconds": "单次查询超时秒数，默认 15。",
 	"request.headers": "额外请求头；值支持 {{apiKey}} 等占位符插值。",
 	maxWidth: "状态栏展示的最大宽度，默认 48。",
+	resetThresholds: `按窗口设置显示 ↺ 重置倒计时的剩余百分比阈值，格式如 5h=80,wk=40；留空用默认（5h=80,wk=40,mo=30），未列出的窗口用 ${FALLBACK_RESET_THRESHOLD}。`,
 	"credentials.apiKey": "条目的 API Key 覆盖；留空则用 pi 运行时解析的 provider 凭据。",
 	"credentials.accessToken": "条目的 access token 覆盖；留空则用 pi 运行时解析的 provider 凭据。",
 	raw: "直接编辑整个条目的 JSON，保存后整体替换。",
@@ -46,6 +48,28 @@ const SUBSCRIPTION_FIELD_HELP: Record<string, string> = {
 
 function textOr(value: unknown, fallback: string): string {
 	return typeof value === "string" && value ? value : value !== undefined && value !== null ? String(value) : fallback;
+}
+
+/** 阈值表 → 表单文案；未设置时显示默认表的摘要。 */
+function formatThresholds(value: unknown): string {
+	const source = isRecord(value) ? value : DEFAULT_RESET_THRESHOLDS;
+	const parts = Object.entries(source)
+		.map(([label, threshold]) => [label, Number(threshold)] as const)
+		.filter(([, threshold]) => Number.isFinite(threshold))
+		.map(([label, threshold]) => `${label}<${String(threshold)}`);
+	return parts.length > 0 ? parts.join(" ") : "<默认>";
+}
+
+/** `5h=80,wk=40` → 阈值对象；空串清除；非法片段返回 undefined。 */
+function parseThresholdsInput(text: string): Record<string, number> | undefined {
+	const result: Record<string, number> = {};
+	for (const token of text.split(/[,，\s]+/).filter(Boolean)) {
+		const [label, raw] = token.split("=");
+		const threshold = Number(raw);
+		if (!label || raw === undefined || !Number.isFinite(threshold)) return undefined;
+		result[label] = threshold;
+	}
+	return result;
 }
 
 function buildRows(draft: JsonObject): { id: string; label: string; value: string }[] {
@@ -59,6 +83,7 @@ function buildRows(draft: JsonObject): { id: string; label: string; value: strin
 		{ id: "request.timeoutSeconds", label: "超时秒数", value: textOr(valueAtPath(draft, "request.timeoutSeconds"), "15") },
 		{ id: "request.headers", label: "请求头", value: headerCount > 0 ? `${headerCount} 项` : "<无>" },
 		{ id: "maxWidth", label: "状态栏宽度", value: textOr(draft.maxWidth, "48") },
+		{ id: "resetThresholds", label: "倒计时阈值", value: formatThresholds(draft.resetThresholds) },
 		{ id: "credentials.apiKey", label: "API Key", value: maskSecret(valueAtPath(draft, "credentials.apiKey")) },
 		{ id: "credentials.accessToken", label: "Access Token", value: maskSecret(valueAtPath(draft, "credentials.accessToken")) },
 		{ id: "raw", label: "原始 JSON", value: "编辑整个条目" },
@@ -77,7 +102,7 @@ function sectionSummary(sectionId: string, draft: JsonObject): string {
 			return `${adapter} · ${textOr(valueAtPath(draft, "request.baseUrl"), adapterMeta(String(draft.adapter))?.endpoint ?? "—")}`;
 		}
 		case "display":
-			return `标签 ${textOr(draft.label, "默认")} · 宽度 ${textOr(draft.maxWidth, "48")}`;
+			return `标签 ${textOr(draft.label, "默认")} · 宽度 ${textOr(draft.maxWidth, "48")} · 阈值 ${formatThresholds(draft.resetThresholds)}`;
 		case "credentials": {
 			const count = ["credentials.apiKey", "credentials.accessToken"].filter((path) => valueAtPath(draft, path) !== undefined && valueAtPath(draft, path) !== "").length;
 			return count > 0 ? `${count} 项已设置` : "<用 pi 运行时凭据>";
@@ -149,6 +174,23 @@ async function editSubscriptionFieldById(ctx: ExtensionCommandContext, rows: { i
 			return;
 		}
 		setValueAtPath(draft, id, parsed);
+		return;
+	}
+	if (id === "resetThresholds") {
+		const current = valueAtPath(draft, "resetThresholds");
+		const value = await ctx.ui.input(`${label}（格式：5h=80,wk=40；当前：${formatThresholds(current)}；留空清除）`, isRecord(current) ? Object.entries(current).map(([key, threshold]) => `${key}=${String(threshold)}`).join(",") : "");
+		if (value === undefined) return;
+		const trimmed = value.trim();
+		if (trimmed === "") {
+			setValueAtPath(draft, "resetThresholds", "");
+			return;
+		}
+		const parsed = parseThresholdsInput(trimmed);
+		if (!parsed) {
+			void ctx.ui.notify("格式需要 标签=数字，如 5h=80,wk=40", "warning");
+			return;
+		}
+		setValueAtPath(draft, "resetThresholds", parsed);
 		return;
 	}
 	await editTextField(ctx, draft, id, label);

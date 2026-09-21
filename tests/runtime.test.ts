@@ -204,6 +204,20 @@ test("订阅芯片低额度时带重置倒计时，缓存文本与通知保持�
   }
 });
 
+test("resetThresholds 覆盖默认阈值并作用到状态栏文本", async () => {
+  const harness = setup();
+  try {
+    // 已用 90%：默认阈值（5h 剩余 <80）会显示倒计时，把阈值覆盖成 5 后不再显示。
+    const dir = process.env.PI_CODING_AGENT_DIR!;
+    writeFileSync(join(dir, "usage-config.yaml"), `${CONFIG}\n    resetThresholds:\n      '5h': 5\n`);
+    harness.handler("model_select")({}, harness.makeCtx("og"));
+    await harness.settle();
+    assert.equal(harness.statuses.get("quota"), "5h 90%");
+  } finally {
+    harness.restore();
+  }
+});
+
 test("tps 只测生成区间：流式期间实时上屏，message_end 用权威 output 定案", async () => {
   const harness = setup();
   try {

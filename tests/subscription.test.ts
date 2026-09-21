@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { parse as parseYaml } from "yaml";
-import { formatResetCountdown, renderQuotaText, RESET_COUNTDOWN_REMAINING_PCT } from "../render.ts";
+import { DEFAULT_RESET_THRESHOLDS, FALLBACK_RESET_THRESHOLD, formatResetCountdown, renderQuotaText } from "../render.ts";
 import {
 	defaultBaseUrl,
 	fetchSubscriptionUsage,
@@ -18,6 +18,7 @@ import {
 	suggestAdapter,
 } from "../subscription.ts";
 import { ensureBaseConfigFile, migrateLegacyConfig } from "../usage-edit.ts";
+import { resetThresholdsFor } from "../usage-service.ts";
 import { UsageService } from "../usage-service.ts";
 
 function makeDir(): string {
@@ -134,15 +135,35 @@ test("formatResetCountdown 用复合单位，最多两位；过期或缺失返�
 	assert.equal(formatResetCountdown("not-a-date", now), undefined);
 });
 
-test("倒计时仅在剩余低于阈值时出现，且符号与倒计时之间留空格", () => {
+test("倒计时仅在窗口剩余低于其阈值时出现，且符号与倒计时之间留空格", () => {
 	const now = Date.parse("2026-01-07T00:00:00.000Z");
-	const low = [{ label: "5h", percent: 100 - RESET_COUNTDOWN_REMAINING_PCT + 1, resetsAt: "2026-01-07T02:30:00.000Z" }];
-	assert.equal(renderQuotaText(low, 100, now), "5h 81% ↺ 2h30m");
+	const fiveHour = (percent: number) => [{ label: "5h", percent, resetsAt: "2026-01-07T02:30:00.000Z" }];
+	// 默认阈值：5h 剩余 <80%（即已用 >20%）就提示重置时间。
+	assert.equal(renderQuotaText(fiveHour(20.1), 100, now), "5h 20% ↺ 2h30m");
 	// 剩余恰好等于阈值（未低于）不显示倒计时。
-	const boundary = [{ label: "5h", percent: 100 - RESET_COUNTDOWN_REMAINING_PCT, resetsAt: "2026-01-07T02:30:00.000Z" }];
-	assert.equal(renderQuotaText(boundary, 100, now), "5h 80%");
+	assert.equal(renderQuotaText(fiveHour(20), 100, now), "5h 20%");
 	// 不传 now 时永远不渲染倒计时（缓存文本与通知文案保持稳定）。
-	assert.equal(renderQuotaText(low, 100), "5h 81%");
+	assert.equal(renderQuotaText(fiveHour(90), 100), "5h 90%");
+	// 阈值表按窗口生效：wk 默认 40、mo 默认 30。
+	const windows = [
+		{ label: "wk", percent: 61, resetsAt: "2026-01-09T00:00:00.000Z" },
+		{ label: "mo", percent: 71, resetsAt: "2026-02-01T00:00:00.000Z" },
+	];
+	assert.equal(renderQuotaText(windows, 100, now), "wk 61% ↺ 2d · mo 71% ↺ 25d");
+	assert.equal(renderQuotaText([{ ...windows[0]!, percent: 60 }], 100, now), "wk 60%");
+});
+
+test("倒计时阈值可按窗口覆盖，未列出的标签用兜底阈值", () => {
+	const now = Date.parse("2026-01-07T00:00:00.000Z");
+	const windows = [{ label: "5h", percent: 20.5, resetsAt: "2026-01-07T02:30:00.000Z" }];
+	// 覆盖为 50：剩余 79.5% ≥ 50 → 不显示。
+	assert.equal(renderQuotaText(windows, 100, now, { ...DEFAULT_RESET_THRESHOLDS, "5h": 50 }), "5h 21%");
+	// 覆盖为 0（或负数）等于关闭该窗口的倒计时。
+	assert.equal(renderQuotaText(windows, 100, now, { ...DEFAULT_RESET_THRESHOLDS, "5h": 0 }), "5h 21%");
+	// 未列出的标签（GLM 的 `1h`、Kimi 的 `150m`）用兜底阈值。
+	const odd = [{ label: "1h", percent: 100 - FALLBACK_RESET_THRESHOLD + 1, resetsAt: "2026-01-07T00:30:00.000Z" }];
+	assert.equal(renderQuotaText(odd, 100, now, {}), "1h 71% ↺ 30m");
+	assert.equal(renderQuotaText([{ ...odd[0]!, percent: 50 }], 100, now, {}), "1h 50%");
 });
 
 test("超宽时先丢倒计时，再丢非 5h 窗口", () => {
@@ -256,6 +277,15 @@ test("UsageService 按配置分派订阅/余额并记录 kind", async () => {
 	const subscription = await service.refresh("opencode-go", { apiKey: "sk" });
 	assert.equal(subscription.value?.kind, "subscription");
 	assert.equal(subscription.value?.text, "5h 10%");
+	// 未配置 resetThresholds 时携带默认阈值表，供状态栏重排使用。
+	assert.deepEqual(subscription.value?.kind === "subscription" ? subscription.value.resetThresholds : undefined, { ...DEFAULT_RESET_THRESHOLDS });
+});
+
+test("resetThresholdsFor 在默认表上按窗口覆盖，非法值忽略", () => {
+	assert.deepEqual(resetThresholdsFor({}), { ...DEFAULT_RESET_THRESHOLDS });
+	assert.deepEqual(resetThresholdsFor({ resetThresholds: { "5h": 50, "1h": 20 } }), { ...DEFAULT_RESET_THRESHOLDS, "5h": 50, "1h": 20 });
+	// YAML 里写成字符串的数字可用；不可转换的值退回默认。
+	assert.deepEqual(resetThresholdsFor({ resetThresholds: { wk: "35", mo: "abc" } }), { ...DEFAULT_RESET_THRESHOLDS, wk: 35 });
 });
 
 test("旧 balance-config.yaml 一次性迁移到 usage-config.yaml，旧文件保留", async () => {

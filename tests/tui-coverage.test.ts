@@ -46,6 +46,7 @@ test("订阅条目表单覆盖运行时全部字段并使用统一的 request.* 
 		"request.timeoutSeconds",
 		"request.headers",
 		"maxWidth",
+		"resetThresholds",
 		"credentials.apiKey",
 		"credentials.accessToken",
 		"raw",

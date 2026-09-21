@@ -80,6 +80,7 @@ function subscriptionSummary(entry: JsonObject | undefined): string[] {
 	}
 	lines.push(`  凭据: ${entry.credentials ? "条目内覆盖（已掩码）；其余用 pi 运行时解析" : "使用 pi 运行时解析的 provider 凭据"}`);
 	if (entry.maxWidth !== undefined) lines.push(`  状态栏宽度: ${String(entry.maxWidth)}`);
+	if (entry.resetThresholds !== undefined) lines.push(`  倒计时阈值: ${JSON.stringify(entry.resetThresholds)}`);
 	return lines;
 }
 

@@ -1,10 +1,20 @@
 import { objectAt, readConfig, refreshInterval } from "./usage-config.ts";
 import { requestBalance } from "./usage-request.ts";
-import { renderQuotaText } from "./render.ts";
+import { DEFAULT_RESET_THRESHOLDS, renderQuotaText } from "./render.ts";
 import { adapterMeta, fetchSubscriptionUsage, isSubscriptionAdapter } from "./subscription.ts";
 import type { FetchLike, JsonObject, UsageSource, UsageState, UsageValue } from "./types.ts";
 
 const EMPTY: UsageState = { loading: false };
+
+/** 阈值来自 subscriptions.<id>.resetThresholds：按窗口覆盖默认表，非法值忽略。 */
+export function resetThresholdsFor(entry: JsonObject): Record<string, number> {
+	const overrides: Record<string, number> = {};
+	for (const [label, value] of Object.entries(objectAt(entry, "resetThresholds") ?? {})) {
+		const threshold = Number(value);
+		if (Number.isFinite(threshold)) overrides[label] = threshold;
+	}
+	return { ...DEFAULT_RESET_THRESHOLDS, ...overrides };
+}
 
 export type UsageKind = "balance" | "subscription";
 
@@ -102,6 +112,7 @@ export class UsageService {
 			text: renderQuotaText(windows, resolvedMaxWidth),
 			windows,
 			maxWidth: resolvedMaxWidth,
+			resetThresholds: resetThresholdsFor(entry),
 		};
 	}
 }

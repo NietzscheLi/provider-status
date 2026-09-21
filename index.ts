@@ -116,7 +116,7 @@ export default function providerStatusExtension(pi: ExtensionAPI): void {
 			const kind = current ? service.kindOf(current) : undefined;
 			const value = state?.value;
 			// 窗口文本每次按当前时间重排：缓存里的 text 不含倒计时，否则重渲染会一直显示旧值。
-			const quotaText = value?.kind === "subscription" ? renderQuotaText(value.windows, value.maxWidth, Date.now()) : undefined;
+			const quotaText = value?.kind === "subscription" ? renderQuotaText(value.windows, value.maxWidth, Date.now(), value.resetThresholds) : undefined;
 			const text = state ? formatUsageState(state, quotaText) : "--";
 			// 订阅型与余额型分键发布，同一时刻只会有一个键有值；未配置的 provider 不占位。
 			if (kind === "subscription") {
