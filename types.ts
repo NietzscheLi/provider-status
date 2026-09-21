@@ -22,7 +22,7 @@ export interface BalanceValue {
 	text: string;
 }
 
-/** 订阅型结果：text 已完成 starship 友好的窗口渲染。 */
+/** 订阅型结果：text 为已渲染的窗口文本（如 `5h 2% · wk 1%`）。 */
 export interface SubscriptionValue {
 	kind: "subscription";
 	text: string;

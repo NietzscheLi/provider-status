@@ -6,6 +6,9 @@ import { join } from "node:path";
 import test from "node:test";
 import providerStatusExtension from "../index.ts";
 
+// 余额芯片带 md-cash 前缀图标（见 index.ts BALANCE_ICON）。
+const BALANCE_ICON = "\u{f0114}";
+
 const CONFIG = [
   "templates: {}",
   "balances:",
@@ -97,7 +100,7 @@ test("/balance update handler returns immediately while the balance request hang
     harness.release();
     await settle();
     assert.equal(harness.getFetchCount(), 1);
-    assert.equal(harness.statuses.get("balance"), "9");
+    assert.equal(harness.statuses.get("balance"), `${BALANCE_ICON} 9`);
   } finally {
     harness.restore();
   }
@@ -114,7 +117,7 @@ test("/balance status reports current state without waiting for the request", as
 
     harness.release();
     await settle();
-    assert.equal(harness.statuses.get("balance"), "9");
+    assert.equal(harness.statuses.get("balance"), `${BALANCE_ICON} 9`);
   } finally {
     harness.restore();
   }

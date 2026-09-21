@@ -5,6 +5,9 @@ import { join } from "node:path";
 import test from "node:test";
 import providerStatusExtension from "../index.ts";
 
+// 余额芯片带 md-cash 前缀图标（见 index.ts BALANCE_ICON）。
+const BALANCE_ICON = "\u{f0114}";
+
 const CONFIG = [
   "templates: {}",
   "balances:",
@@ -92,7 +95,7 @@ test("缓存优先：新鲜结果直接上屏，不解析认证也不发请求",
     modelSelectHandler({}, ctx);
     await harness.settle();
     assert.equal(harness.getFetchCount(), 1);
-    assert.equal(harness.statuses.get("balance"), "9");
+    assert.equal(harness.statuses.get("balance"), `${BALANCE_ICON} 9`);
     assert.equal(harness.getAuthCalls(), 1);
 
     // 再次 model_select：缓存新鲜，直接复用，认证解析与 fetch 都不再发生。
@@ -100,7 +103,7 @@ test("缓存优先：新鲜结果直接上屏，不解析认证也不发请求",
     await harness.settle();
     assert.equal(harness.getFetchCount(), 1);
     assert.equal(harness.getAuthCalls(), 1);
-    assert.equal(harness.statuses.get("balance"), "9");
+    assert.equal(harness.statuses.get("balance"), `${BALANCE_ICON} 9`);
   } finally {
     harness.restore();
   }
@@ -115,7 +118,7 @@ test("失败退避：事件触发的刷新在退避期内不再击打端点，�
     modelSelectHandler({}, ctx);
     await harness.settle();
     assert.equal(harness.getFetchCount(), 1);
-    assert.equal(harness.statuses.get("balance"), "unavailable");
+    assert.equal(harness.statuses.get("balance"), `${BALANCE_ICON} unavailable`);
 
     // 退避期内的事件刷新不再发请求（对应 pi-usage 的 FAILURE_BACKOFF_MS）。
     modelSelectHandler({}, ctx);

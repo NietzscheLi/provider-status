@@ -20,6 +20,9 @@ import type { UsageState } from "./types.ts";
 const MODELS_CHANGED_EVENT = "pi-model-manager:models-changed";
 // 参照 pi-usage：失败后退避一段时间，避免端点持续故障时被事件风暴反复击打。
 const FAILURE_BACKOFF_MS = 30_000;
+// 余额芯片前缀图标，取自 pi-cc-extensions footer 同族（Nerd Fonts v3 MDI）：md-cash U+F0114，
+// 与该项目 footer 缓存芯片的 md-database 󰆼（U+F01BC）同族；tok/s 不带图标。
+const BALANCE_ICON = "\u{f0114}";
 
 export default function providerStatusExtension(pi: ExtensionAPI): void {
 	const agentDir = getAgentDir();
@@ -86,20 +89,22 @@ export default function providerStatusExtension(pi: ExtensionAPI): void {
 		return inFlight;
 	};
 
+	/** 生成速度文案：数字在前、单位在后，不带图标（`42.7 tok/s`）。 */
+	const tpsText = (): string => (tps === undefined ? "-- tok/s" : `${tps.toFixed(1)} tok/s`);
+
 	const update = (ctx: ExtensionContext) => {
 		try {
 			const state: UsageState | undefined = current ? service.get(current) : undefined;
 			const text = state ? formatUsageState(state) : "--";
-			// 订阅型与余额型分键发布，starship 用 [extension_status.icons] 区分图标；
-			// 同一时刻只会有一个键有值。
+			// 订阅型与余额型分键发布，同一时刻只会有一个键有值。
 			if (current && service.kindOf(current) === "subscription") {
 				ctx.ui.setStatus("quota", text);
 				ctx.ui.setStatus("balance", undefined);
 			} else {
-				ctx.ui.setStatus("balance", text);
+				ctx.ui.setStatus("balance", `${BALANCE_ICON} ${text}`);
 				ctx.ui.setStatus("quota", undefined);
 			}
-			ctx.ui.setStatus("tps", tps === undefined ? "TPS --" : `TPS ${tps.toFixed(1)}`);
+			ctx.ui.setStatus("tps", tpsText());
 		} catch {
 			// stale ctx 或非 TUI 模式下忽略 UI 失败。
 		}
@@ -187,7 +192,7 @@ export default function providerStatusExtension(pi: ExtensionAPI): void {
 
 	const showStatus = (ctx: ExtensionContext) => {
 		const state: UsageState = current ? service.get(current) : { loading: false };
-		notifySafe(ctx, `Usage: ${current ?? "no model"} ${describeState(state)}; TPS ${tps === undefined ? "--" : tps.toFixed(1)}`, "info");
+		notifySafe(ctx, `Usage: ${current ?? "no model"} ${describeState(state)}; ${tpsText()}`, "info");
 	};
 
 	pi.registerCommand("usage", {
