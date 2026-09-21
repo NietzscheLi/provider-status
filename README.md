@@ -10,9 +10,9 @@
 |---|---|---|
 | `balance` | 余额型文案：提取器输出（语义始终是剩余额度）+ ` left`，前缀 md-cash 图标（Nerd Fonts v3 `U+F0114`） | `󰄔 $6.53 left` |
 | `quota` | 订阅型窗口文案：窗口 + 已用百分比；**剩余 <20% 的窗口**追加 `↺ 2h30m` 重置倒计时 | `5h 85% ↺ 2h30m · wk 3%` |
-| `tps` | 生成速度：上一轮的输出 token ÷ 该轮耗时；数字在前、单位在后，不带图标 | `42.7 tok/s` |
+| `tps` | 生成速度：只统计生成区间（首个内容块 → 最后一个 delta），数字在前、单位在后，不带图标 | `42.7 tok/s` |
 
-`tps` 是**每轮瞬时值**，在 `turn_end` 时按 `message.usage.output / (now - turn_start)` 计算，没有新回合时会一直停在最后一轮的数字，未产生过速度时显示 `-- tok/s`。`session_shutdown` 时三个键都会被清除；`/usage status` 的提示里显示同一份 `tok/s` 文案。
+`tps` 是**生成区间速度**，不是整轮耗时平均：`message_update` 的 `text_start`/`thinking_start`/`toolcall_start` 开始计时，`text_delta`/`thinking_delta` 喂入时间滑动窗（默认 5s，带 provider 缓冲突发的跨度补偿），生成期间约 250ms 节流上屏；`message_end` 时用权威 `message.usage.output` 除以「首个内容块 → 最后一个 delta」的跨度定案——**TTFT/排队与工具执行时间不在分母里**（`turn_end` 口径会把两者都算进去，带工具的一轮会明颉偏低）。provider 累计上报 `usage.output` 时用其增量，否则按词法估算（英文按词、CJK 按字符）。超过 5 分钟没有新数据、或从未产生过速度时显示 `-- tok/s`。`session_shutdown` 时三个键都会被清除；`/usage status` 的提示里显示同一份 `tok/s` 文案。
 
 两类数据分开建模：
 

@@ -203,3 +203,35 @@ test("订阅芯片低额度时带重置倒计时，缓存文本与通知保持�
     harness.restore();
   }
 });
+
+test("tps 只测生成区间：流式期间实时上屏，message_end 用权威 output 定案", async () => {
+  const harness = setup();
+  try {
+    const onUpdate = harness.handler("message_update");
+    const onEnd = harness.handler("message_end");
+    const ctx = harness.makeCtx("alpha");
+    const streamEvent = (event: Record<string, unknown>) => ({ assistantMessageEvent: event });
+    const partial = { usage: { output: 0 } };
+
+    onUpdate(streamEvent({ type: "text_start", contentIndex: 0, partial }), ctx);
+    // 首个 delta：滑动窗立即给出读数（2 tokens / 最小跨度 0.25s），不必等到回合结束。
+    onUpdate(streamEvent({ type: "text_delta", contentIndex: 0, delta: "hello world", partial }), ctx);
+    assert.equal(harness.statuses.get("tps"), "8.0 tok/s");
+
+    // 生成区间约 400ms 后流结束，usage.output 为权威分子（TTFT 与工具时间不在分母里）。
+    await new Promise((r) => setTimeout(r, 400));
+    onUpdate(streamEvent({ type: "text_delta", contentIndex: 0, delta: "again", partial: { usage: { output: 40 } } }), ctx);
+    onEnd({ message: { role: "assistant", usage: { output: 40 } } }, ctx);
+    const match = /^([0-9]+\.[0-9]) tok\/s$/.exec(harness.statuses.get("tps")!);
+    assert.ok(match, harness.statuses.get("tps"));
+    const tps = Number(match[1]);
+    // 40 tokens / ~0.4s ≈ 100 tok/s（允许计时抖动）。
+    assert.ok(tps >= 80 && tps <= 130, `unexpected tps: ${String(tps)}`);
+
+    // 非 assistant 的 message_end（user/toolResult）不影响读数。
+    onEnd({ message: { role: "user", usage: { output: 0 } } }, ctx);
+    assert.equal(harness.statuses.get("tps"), `${tps.toFixed(1)} tok/s`);
+  } finally {
+    harness.restore();
+  }
+});

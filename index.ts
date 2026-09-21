@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { formatUsageState, renderQuotaText } from "./render.ts";
+import { TPS_STALE_MS, TpsMeter } from "./tps.ts";
 import { UsageService } from "./usage-service.ts";
 import { readConfig, refreshInterval } from "./usage-config.ts";
 import { ensureBaseConfigFile } from "./usage-edit.ts";
@@ -24,6 +25,8 @@ const FAILURE_BACKOFF_MS = 30_000;
 const BALANCE_ICON = "\u{f0114}";
 // 倒计时是本地重排（不发请求），参照 pi-usage 的 60s 重渲染节奏。
 const COUNTDOWN_TICK_MS = 60_000;
+// 生成期间的上屏节流：滑动窗读数只在增量到达时刷新，不必每个 delta 都重绘 footer。
+const TPS_RENDER_MS = 250;
 
 export default function providerStatusExtension(pi: ExtensionAPI): void {
 	const agentDir = getAgentDir();
@@ -31,8 +34,6 @@ export default function providerStatusExtension(pi: ExtensionAPI): void {
 	const path = modelsPath(agentDir);
 	// 配置缺失时初始化基础文件（旧 balance-config.yaml 会一次性迁移）；失败不阻断扩展加载。
 	void ensureBaseConfigFile(agentDir).catch(() => undefined);
-	let startedAt: number | undefined;
-	let tps: number | undefined;
 	let current: string | undefined;
 	let sessionCtx: ExtensionContext | undefined;
 	let inFlight: Promise<ReconcileReport | undefined> | undefined;
@@ -43,6 +44,10 @@ export default function providerStatusExtension(pi: ExtensionAPI): void {
 	let refreshTimer: ReturnType<typeof setTimeout> | undefined;
 	let countdownTimer: ReturnType<typeof setTimeout> | undefined;
 	const failureBackoff = new Map<string, number>();
+	// 生成速度测量（滑动窗 + 流式区间，见 tps.ts）：与额度/余额查询彼此独立。
+	const meter = new TpsMeter();
+	let lastTpsRender = 0;
+	let tpsExpiryTimer: ReturnType<typeof setTimeout> | undefined;
 
 	const notifySafe = (ctx: ExtensionContext, message: string, level: "info" | "warning" | "error") => {
 		try {
@@ -91,8 +96,11 @@ export default function providerStatusExtension(pi: ExtensionAPI): void {
 		return inFlight;
 	};
 
-	/** 生成速度文案：数字在前、单位在后，不带图标（`42.7 tok/s`）。 */
-	const tpsText = (): string => (tps === undefined ? "-- tok/s" : `${tps.toFixed(1)} tok/s`);
+	/** 生成速度文案：数字在前、单位在后，不带图标（`42.7 tok/s`）；无数据或超时回退 `-- tok/s`。 */
+	const tpsText = (): string => {
+		const tps = meter.value();
+		return tps === undefined ? "-- tok/s" : `${tps.toFixed(1)} tok/s`;
+	};
 
 	// 状态栏去重：每秒级的 tps 刷新与 60s 的倒计时重排不该让 footer 无谓重绘。
 	const published = new Map<string, string | undefined>();
@@ -136,6 +144,23 @@ export default function providerStatusExtension(pi: ExtensionAPI): void {
 	const clearCountdownTimer = () => {
 		if (countdownTimer) clearTimeout(countdownTimer);
 		countdownTimer = undefined;
+	};
+
+	const clearTpsExpiry = () => {
+		if (tpsExpiryTimer) clearTimeout(tpsExpiryTimer);
+		tpsExpiryTimer = undefined;
+	};
+
+	/** 流结束后安排一次失效重排：超过 TPS_STALE_MS 没新数据，芯片回 `-- tok/s`。 */
+	const scheduleTpsExpiry = () => {
+		clearTpsExpiry();
+		if (meter.value() === undefined) return;
+		tpsExpiryTimer = setTimeout(() => {
+			tpsExpiryTimer = undefined;
+			const latest = sessionCtx;
+			if (latest) update(latest);
+		}, TPS_STALE_MS + 1_000);
+		tpsExpiryTimer.unref?.();
 	};
 
 	/** 仅在文本含倒计时时挂每分钟的本地重渲染；不触发任何网络查询。 */
@@ -277,16 +302,27 @@ export default function providerStatusExtension(pi: ExtensionAPI): void {
 		},
 	});
 
-	pi.on("turn_start", (event: any) => {
-		startedAt = event.timestamp;
+	// 生成速度：只统计流式生成区间（首个内容块 → 最后一个 delta），TTFT/排队与工具执行不在分母里。
+	pi.on("message_update", (event, ctx) => {
+		const streamEvent = event.assistantMessageEvent;
+		if (streamEvent.type === "text_start" || streamEvent.type === "thinking_start" || streamEvent.type === "toolcall_start") {
+			meter.beginStream();
+			return;
+		}
+		if (streamEvent.type !== "text_delta" && streamEvent.type !== "thinking_delta") return;
+		// beginStream 幂等：没收到 *_start 的 provider 也能从首个 delta 开始计时。
+		meter.beginStream();
+		meter.noteDelta(streamEvent.delta, streamEvent.partial.usage.output);
+		if (Date.now() - lastTpsRender < TPS_RENDER_MS) return;
+		lastTpsRender = Date.now();
+		update(ctx);
 	});
 
-	pi.on("turn_end", (event, ctx) => {
-		if (event.message?.role === "assistant" && startedAt !== undefined) {
-			const message = event.message as AssistantMessage;
-			tps = message.usage.output / Math.max((Date.now() - startedAt) / 1000, 0.001);
-			update(ctx);
-		}
+	pi.on("message_end", (event, ctx) => {
+		if (event.message.role !== "assistant") return;
+		meter.finishStream(event.message.usage.output);
+		update(ctx);
+		scheduleTpsExpiry();
 	});
 
 	pi.on("model_select", (_event, ctx) => {
@@ -312,6 +348,9 @@ export default function providerStatusExtension(pi: ExtensionAPI): void {
 		refreshController = undefined;
 		clearRefreshTimer();
 		clearCountdownTimer();
+		clearTpsExpiry();
+		meter.reset();
+		lastTpsRender = 0;
 		failureBackoff.clear();
 		ctx.ui.setStatus("balance", undefined);
 		ctx.ui.setStatus("quota", undefined);

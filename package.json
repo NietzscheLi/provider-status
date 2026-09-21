@@ -18,6 +18,7 @@
     "usage-extractor.ts",
     "subscription.ts",
     "render.ts",
+    "tps.ts",
     "reconcile.ts",
     "types.ts",
     "tui/persistent-menu.ts",
