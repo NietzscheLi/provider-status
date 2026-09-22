@@ -6,7 +6,7 @@ import type { JsonObject, UsageConfig } from "./types.ts";
 
 export const MAP_VERSION = 1;
 
-/** 与 manager `models-change-events.ts` 的负载结构保持一致（无 secret）。 */
+/** 与 pi-model-manager `model-mutations.ts` 的 `pi-model-manager:models-changed` 负载结构保持一致（无 secret）。 */
 export type ReconcileEvent =
 	| { type: "provider-rename"; oldId: string; newId: string }
 	| { type: "provider-delete"; providerId: string };
@@ -140,7 +140,10 @@ export async function reconcileProviders(agentDir: string, path: string, options
 		// prune：用户明确确认后才把 orphan 隔离进 orphans（可恢复，不做物理删除）。
 		const quarantined: string[] = [];
 		if (orphan.length > 0 && options.confirmPrune && (await options.confirmPrune(orphan))) {
-			const quarantine: Record<string, JsonObject> = { ...(providerRecord(current.orphans) ?? {}) };
+			const quarantine: Record<string, JsonObject> = {};
+			for (const [id, entry] of Object.entries(providerRecord(current.orphans) ?? {})) {
+				if (entry && typeof entry === "object" && !Array.isArray(entry)) quarantine[id] = entry as JsonObject;
+			}
 			for (const id of orphan) {
 				quarantine[id] = balances[id]!;
 				delete balances[id];

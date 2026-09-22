@@ -67,8 +67,9 @@ export async function requestBalance(
 		accessToken: String(credentials.accessToken ?? source.accessToken ?? source.apiKey ?? ""),
 		userId: String(credentials.userId ?? ""),
 	};
-	let url = interpolateObject(request.url, vars);
-	if (typeof url !== "string" || !url) throw new Error("Balance request URL is missing");
+	const rawUrl = interpolateObject(request.url, vars);
+	if (typeof rawUrl !== "string" || !rawUrl) throw new Error("Balance request URL is missing");
+	let url = rawUrl;
 	// 相对路径（如 /api/v1/credits）以 baseUrl 为根解析；完整 URL 或已含 {{baseUrl}} 的模板不受影响。
 	if (!/^https?:\/\//i.test(url) && !url.startsWith("{{")) {
 		if (!baseUrl) throw new Error("Balance request URL is missing");

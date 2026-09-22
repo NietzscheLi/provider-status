@@ -28,11 +28,12 @@ function renameMapKey(map: YAMLMap, from: string, to: string): boolean {
 	const pair = map.items.find((candidate) => String(candidate.key) === from);
 	if (!pair) return false;
 	const oldKey = pair.key;
-	pair.key = new Scalar(to);
+	const newKey = new Scalar(to);
+	pair.key = newKey;
 	// 键前空行与注释挂在旧键节点上；不复制就会在重命名时丢掉。
 	if (oldKey instanceof Scalar) {
-		if (oldKey.spaceBefore) pair.key.spaceBefore = true;
-		if (oldKey.commentBefore) pair.key.commentBefore = oldKey.commentBefore;
+		if (oldKey.spaceBefore) newKey.spaceBefore = true;
+		if (oldKey.commentBefore) newKey.commentBefore = oldKey.commentBefore;
 	}
 	return true;
 }
@@ -44,8 +45,11 @@ function normalizeEntryNode(value: unknown): boolean {
 	const validityPair = value.items.find((pair) => String(pair.key) === "validity");
 	// 非映射的顶层 validity 是手写的无效值，不动用户数据。
 	if (!validityPair || !isMap(validityPair.value)) return changed;
-	let extractor = value.get("extractor");
-	if (!isMap(extractor)) {
+	const existing = value.get("extractor");
+	let extractor: YAMLMap;
+	if (isMap(existing)) {
+		extractor = existing;
+	} else {
 		// 已有非法 extractor 值时替换其值，避免写出重复 key。
 		const existingPair = value.items.find((pair) => String(pair.key) === "extractor");
 		extractor = new YAMLMap();
@@ -204,7 +208,8 @@ export function readSectionEntries(agentDir: string, section: ConfigSection): Re
 	const result: Record<string, JsonObject> = {};
 	for (const pair of value.items) {
 		const key = String(pair.key);
-		const entry = pair.value?.toJSON?.();
+		const node = pair.value;
+		const entry = isNode(node) ? node.toJSON() : node;
 		if (entry && typeof entry === "object" && !Array.isArray(entry)) {
 			// 旧键在读取侧也做一次归一化：迁移写盘失败时列表与编辑器仍按新键工作。
 			normalizeEntry(entry as JsonObject);

@@ -353,7 +353,7 @@ export async function fetchSubscriptionUsage(input: SubscriptionFetchInput): Pro
 				if (!(error instanceof Error) || error.message !== "HTTP 401") throw error;
 				json = await requestJson(url, { method: "GET", headers: { ...headers, Authorization: `Bearer ${token}` } }, input);
 			}
-			if (objectAt(json, "success") === false) throw new Error(`GLM coding plan unavailable: ${String(objectAt(json, "msg") ?? "")}`.trim());
+			if (valueAt(json, "success") === false) throw new Error(`GLM coding plan unavailable: ${String(valueAt(json, "msg") ?? "")}`.trim());
 			return { windows: parseGlmUsage(json) };
 		}
 		case "chatgpt": {

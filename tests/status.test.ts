@@ -142,9 +142,9 @@ test("balances 里未定义的同名模板回退到内置模板（openrouter）"
   writeFileSync(join(dir, "usage-config.yaml"), "templates: {}\nbalances:\n  openrouter:\n    template: openrouter\n");
   let url = "";
   let auth: string | undefined;
-  const fetcher = async (input: string | URL, init?: { headers?: Record<string, string> }) => {
+  const fetcher = async (input: string | URL, init?: RequestInit) => {
     url = String(input);
-    auth = init?.headers?.Authorization;
+    auth = (init?.headers as Record<string, string> | undefined)?.Authorization;
     return new Response(JSON.stringify({ data: { total_credits: "10", total_usage: "4" } }), { status: 200 });
   };
   assert.equal(await requestBalance(dir, "openrouter", { baseUrl: "https://openrouter.ai/api/v1", apiKey: "sk-or" }, fetcher), "$6");
