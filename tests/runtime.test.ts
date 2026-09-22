@@ -1,6 +1,6 @@
 // 参照 pi-usage 查询运行时的回归测试：缓存优先快速路径、失败退避、切换 provider 中止在途请求。
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import providerStatusExtension from "../index.ts";
@@ -52,11 +52,17 @@ function setup() {
   const commands = new Map<string, { handler: (args: string, ctx: unknown) => Promise<void> }>();
   const statuses = new Map<string, string | undefined>();
   const notifications: string[] = [];
+  const eventHandlers = new Map<string, (payload: unknown) => void>();
   let authCalls = 0;
   providerStatusExtension({
     registerCommand: (name: string, def: { handler: (args: string, ctx: unknown) => Promise<void> }) => commands.set(name, def),
     on: (name: string, handler: Handler) => handlers.set(name, [...(handlers.get(name) ?? []), handler]),
-    events: { on: () => undefined },
+    events: {
+      on: (name: string, handler: (payload: unknown) => void) => {
+        eventHandlers.set(name, handler);
+        return () => undefined;
+      },
+    },
   } as never);
 
   const makeCtx = (provider: string) => ({
@@ -82,6 +88,11 @@ function setup() {
     commands,
     statuses,
     notifications,
+    emitModelsChanged: (payload: unknown) => {
+      const handler = eventHandlers.get("pi-model-manager:models-changed");
+      assert.ok(handler, "models-changed listener not registered");
+      handler(payload);
+    },
     makeCtx,
     settle,
     getFetchCount: () => fetchCount,
@@ -213,6 +224,80 @@ test("resetThresholds 覆盖默认阈值并作用到状态栏文本", async () =
     harness.handler("model_select")({}, harness.makeCtx("og"));
     await harness.settle();
     assert.equal(harness.statuses.get("quota"), "5h 90%");
+  } finally {
+    harness.restore();
+  }
+});
+
+test("agent_settled 在终局边界按新鲜度/退避规则补一次余额刷新", async () => {
+  const harness = setup();
+  try {
+    const onSettled = harness.handler("agent_settled");
+    const ctx = harness.makeCtx("alpha");
+    onSettled({}, ctx);
+    await harness.settle();
+    assert.equal(harness.getFetchCount(), 1);
+    assert.equal(harness.statuses.get("balance"), `${BALANCE_ICON} 9 left`);
+
+    // 缓存新鲜时不再击打端点。
+    onSettled({}, ctx);
+    await harness.settle();
+    assert.equal(harness.getFetchCount(), 1);
+  } finally {
+    harness.restore();
+  }
+});
+
+test("cache_warming_decision：额度窗口达到阈值时拒绝预热，余额型与无数据时不拦截", async () => {
+  const harness = setup();
+  try {
+    const dir = process.env.PI_CODING_AGENT_DIR!;
+    const decision = harness.handler("cache_warming_decision") as unknown as (event: unknown, ctx: unknown) => unknown;
+    const subscriptionCtx = harness.makeCtx("og");
+
+    // 尚未查询到额度数据：交给 pi 自己的成本判断。
+    assert.equal(decision({}, subscriptionCtx), undefined);
+
+    harness.handler("model_select")({}, subscriptionCtx);
+    await harness.settle();
+    // 已用 90% 低于默认阈值 95%：不拦截。
+    assert.equal(decision({}, subscriptionCtx), undefined);
+
+    // 收紧到 50% 后拦截本次预热。
+    writeFileSync(join(dir, "usage-config.yaml"), `${CONFIG}\ncacheWarmingStopPercent: 50\n`);
+    assert.deepEqual(decision({}, subscriptionCtx), { action: "stop" });
+
+    // 余额型 provider 没有窗口数据：不拦截。
+    const balanceCtx = harness.makeCtx("alpha");
+    harness.handler("model_select")({}, balanceCtx);
+    await harness.settle();
+    assert.equal(decision({}, balanceCtx), undefined);
+  } finally {
+    harness.restore();
+  }
+});
+
+test("在途 reconcile 期间到达的 rename 事件排队补跑，不会被丢弃", async () => {
+  const harness = setup();
+  try {
+    const dir = process.env.PI_CODING_AGENT_DIR!;
+    const configPath = join(dir, "usage-config.yaml");
+    // reconcile 需要 models.json 存在（生产环境由 pi/model-manager 维护）。
+    writeFileSync(join(dir, "models.json"), JSON.stringify({ providers: {} }));
+    const readConfigText = () => readFileSync(configPath, "utf8");
+    assert.match(readConfigText(), /alpha:/);
+
+    // 连续两次 rename：第一次在途时第二次入队；缺队列时链路会停在 gamma。
+    harness.emitModelsChanged({ events: [{ type: "provider-rename", oldId: "alpha", newId: "gamma" }] });
+    harness.emitModelsChanged({ events: [{ type: "provider-rename", oldId: "gamma", newId: "delta" }] });
+
+    const deadline = Date.now() + 5_000;
+    while (!/"delta":/.test(readConfigText()) && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    // YAML 文档会把键写成带引号形式："delta"。
+    assert.ok(/"delta":/.test(readConfigText()), `第二次 rename 未被补跑，当前配置：\n${readConfigText()}`);
+    assert.doesNotMatch(readConfigText(), /"alpha":|"gamma":/);
   } finally {
     harness.restore();
   }

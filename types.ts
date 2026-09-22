@@ -65,6 +65,8 @@ export interface FetchLike {
 export interface UsageConfig extends JsonObject {
 	/** 自动刷新间隔（分钟）。 */
 	refreshInterval?: number;
+	/** 订阅窗口已用百分比达到该值时，拒绝 pi 的缓存预热（0-100；默认 95，100 表示仅额度耗尽时拒绝）。 */
+	cacheWarmingStopPercent?: number;
 	/** 余额模板（公共请求/提取协议）；条目用 template 字段绑定。 */
 	templates?: JsonObject;
 	/** 余额型 provider 配置。 */

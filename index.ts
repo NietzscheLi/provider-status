@@ -3,7 +3,7 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { formatUsageState, renderQuotaText } from "./render.ts";
 import { TPS_STALE_MS, TpsMeter } from "./tps.ts";
 import { UsageService } from "./usage-service.ts";
-import { readConfig, refreshInterval } from "./usage-config.ts";
+import { readConfig, refreshInterval, cacheWarmingStopPercent } from "./usage-config.ts";
 import { ensureBaseConfigFile } from "./usage-edit.ts";
 import { getBuiltinProviderIds } from "./builtin.ts";
 import { redactSecrets } from "./usage-store.ts";
@@ -37,6 +37,8 @@ export default function providerStatusExtension(pi: ExtensionAPI): void {
 	let current: string | undefined;
 	let sessionCtx: ExtensionContext | undefined;
 	let inFlight: Promise<ReconcileReport | undefined> | undefined;
+	// 在途 reconcile 期间到达的变更事件不能丢：排队并在本轮结束后自动补跑。
+	let queuedReconcileEvents: ReconcileEvent[] = [];
 	// 查询运行时（参照 pi-usage）：generation + AbortController 保证只有最新的在途查询
 	// 能写状态栏；切换 provider/session 时中止旧请求；失败退避避免端点故障时被反复击打。
 	let refreshGeneration = 0;
@@ -74,25 +76,33 @@ export default function providerStatusExtension(pi: ExtensionAPI): void {
 	};
 
 	const runReconcile = (events?: readonly ReconcileEvent[], confirmPrune?: (orphanIds: string[]) => Promise<boolean>) => {
+		if (events && events.length > 0) queuedReconcileEvents.push(...events);
 		if (inFlight) return inFlight;
-		inFlight = getBuiltinProviderIds()
-			.catch(() => new Set<string>() as ReadonlySet<string>)
-			.then((builtinIds) => reconcileProviders(agentDir, path, { events, confirmPrune, builtinIds }))
-			.then((report) => {
-				const ctx = sessionCtx;
-				if (ctx && (report.conflicts.length > 0 || report.renamed.length > 0 || report.added.length > 0 || report.orphan.length > 0)) {
-					notifySafe(ctx, `Provider usage reconcile: ${reportSummary(report)}`, report.conflicts.length > 0 ? "warning" : "info");
-				}
-				return report;
-			})
-			.catch((error: unknown) => {
-				const ctx = sessionCtx;
-				if (ctx) notifySafe(ctx, `Provider usage reconcile failed: ${error instanceof Error ? error.message : String(error)}`, "warning");
-				return undefined;
-			})
-			.finally(() => {
-				inFlight = undefined;
-			});
+		const execute = (): Promise<ReconcileReport | undefined> => {
+			const pendingEvents = queuedReconcileEvents.length > 0
+				? queuedReconcileEvents.splice(0, queuedReconcileEvents.length)
+				: undefined;
+			return getBuiltinProviderIds()
+				.catch(() => new Set<string>() as ReadonlySet<string>)
+				.then((builtinIds) => reconcileProviders(agentDir, path, { events: pendingEvents, confirmPrune, builtinIds }))
+				.then((report) => {
+					const ctx = sessionCtx;
+					if (ctx && (report.conflicts.length > 0 || report.renamed.length > 0 || report.added.length > 0 || report.orphan.length > 0)) {
+						notifySafe(ctx, `Provider usage reconcile: ${reportSummary(report)}`, report.conflicts.length > 0 ? "warning" : "info");
+					}
+					return report;
+				})
+				.catch((error: unknown) => {
+					const ctx = sessionCtx;
+					if (ctx) notifySafe(ctx, `Provider usage reconcile failed: ${error instanceof Error ? error.message : String(error)}`, "warning");
+					return undefined;
+				})
+				.finally(() => {
+					inFlight = undefined;
+					if (queuedReconcileEvents.length > 0) inFlight = execute();
+				});
+		};
+		inFlight = execute();
 		return inFlight;
 	};
 
@@ -329,6 +339,33 @@ export default function providerStatusExtension(pi: ExtensionAPI): void {
 		refreshInBackground(ctx, false, false);
 	});
 
+	// 终局边界（0.87.0 起保证非重入）：跑完一轮后按新鲜度/退避规则补一次最终余额刷新。
+	pi.on("agent_settled", (_event, ctx) => {
+		refreshInBackground(ctx, false, false);
+	});
+
+	/**
+	 * 额度感知的缓存预热否决：订阅窗口已用比例达到阈值时拒绝 pi 的预热请求，
+	 * 避免额度即将耗尽时继续为缓存刷新付费。余额型 provider 没有窗口数据，不拦截。
+	 */
+	const shouldStopCacheWarming = (ctx: ExtensionContext): boolean => {
+		const providerId = ctx.model?.provider;
+		if (!providerId) return false;
+		const value = service.get(providerId).value;
+		if (!value || value.kind !== "subscription") return false;
+		let threshold = 95;
+		try {
+			threshold = cacheWarmingStopPercent(readConfig(agentDir));
+		} catch {
+			// 配置不可读时使用默认阈值。
+		}
+		return value.windows.some((window) => window.percent >= threshold);
+	};
+
+	pi.on("cache_warming_decision", (_event, ctx) => {
+		return shouldStopCacheWarming(ctx) ? { action: "stop" } : undefined;
+	});
+
 	pi.events.on(MODELS_CHANGED_EVENT, (payload) => {
 		const events = extractEvents(payload);
 		void runReconcile(events);
@@ -352,6 +389,7 @@ export default function providerStatusExtension(pi: ExtensionAPI): void {
 		meter.reset();
 		lastTpsRender = 0;
 		failureBackoff.clear();
+		queuedReconcileEvents = [];
 		ctx.ui.setStatus("balance", undefined);
 		ctx.ui.setStatus("quota", undefined);
 		ctx.ui.setStatus("tps", undefined);

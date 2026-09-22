@@ -50,6 +50,9 @@
 ```yaml
 refreshInterval: 5
 
+# 订阅窗口已用百分比达到该值时，拒绝 pi 的缓存预热（默认 95；100 表示仅在额度耗尽时拒绝）。
+cacheWarmingStopPercent: 95
+
 # 余额模板：公共请求/提取协议，provider 通过 template 引用继承。
 templates:
   newapi: &newapi
@@ -187,6 +190,7 @@ subscriptions:
 - 删除 Provider：默认保留为 orphan 并报告；`--prune` 且用户确认后才隔离进 `orphans`；
 - pi 内置 provider（如 openrouter）不在 models.json 里，配置了也不算 orphan；
 - Provider 重命名：消费 `pi-model-manager` 广播的 `pi-model-manager:models-changed`（`provider-rename`），在锁内迁移余额 key 并记录 alias 到 `provider-usage-map.json`；
+- Provider 删除：同一广播的 `provider-delete` 会立即重算 orphan（已有余额条目默认保留为 orphan 并报告，不会自动删除）；在途 reconcile 期间到达的事件会排到本轮结束后补跑，不会丢；
 - 订阅条目以 provider ID 为键、由内置适配器驱动，不参与隔离。
 
 ## 查询运行时
@@ -197,6 +201,11 @@ subscriptions:
 - **失败退避**：失败后 30s 内事件刷新不再击打端点（`/usage update` 不受限），失败不缓存为新鲜值；
 - **在途中止**：切换 provider/session 时通过 generation + AbortController 立即中止旧请求；
 - **有界读取**：响应体上限 64KB；`timeoutSeconds` 与外部中止共同生效。
+
+### 缓存预热否决与终局刷新
+
+- `cache_warming_decision`：当前 provider 的订阅窗口已用比例达到 `cacheWarmingStopPercent`（默认 95）时返回 `{ action: "stop" }`，避免额度临近耗尽时继续为缓存刷新付费；余额型 provider 没有窗口数据，不拦截。可用 `原始 YAML` 在 `usage-config.yaml` 顶层设置该阈值。
+- `agent_settled`：一轮真正结束（自动重试/压缩均已完成）后按新鲜度与退避规则补一次余额刷新，不在流式中间反复击打端点。
 
 ## 迁移
 

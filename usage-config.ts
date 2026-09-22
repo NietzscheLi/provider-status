@@ -74,7 +74,7 @@ export function normalizeConfig(raw: unknown): UsageConfig {
 			: currentValue ?? legacyValue;
 		delete value[legacy];
 	}
-	if (value.refreshInterval === undefined && value.refreshIntervalMinutes !== undefined) {
+	if (value.refreshInterval === undefined && typeof value.refreshIntervalMinutes === "number") {
 		value.refreshInterval = value.refreshIntervalMinutes;
 	}
 	delete value.refreshIntervalMinutes;
@@ -99,6 +99,12 @@ export function readConfig(agentDir: string): UsageConfig {
 export function refreshInterval(config: UsageConfig): number {
 	const value = Number(config.refreshInterval);
 	return Number.isFinite(value) && value >= 1 ? value : 5;
+}
+
+/** 缓存预热否决阈值：订阅窗口已用百分比达到该值即拒绝预热。默认 95，可用 cacheWarmingStopPercent 覆盖。 */
+export function cacheWarmingStopPercent(config: UsageConfig): number {
+	const value = Number(config.cacheWarmingStopPercent);
+	return Number.isFinite(value) && value >= 0 && value <= 100 ? value : 95;
 }
 
 export function objectAt(value: unknown, path: string): JsonObject | undefined {
