@@ -331,10 +331,10 @@ export async function fetchSubscriptionUsage(input: SubscriptionFetchInput): Pro
 				]);
 				return { windows: parseCommandCodeUsage(credits, summary, nowMs) };
 			} catch (error) {
-				// Command Code 的用量接口与其 Provider API 同源：需要 Pro 及以上套餐的 API key，
-				// 或 CLI/OAuth 登录（由 pi-commandcode-provider 的 oauth.getApiKey 自动刷新）。
+				// Command Code 的用量接口与其 Provider API 同源：需要 Pro 及以上套餐的凭据，
+				// 由 pi 运行时解析，或直接写在条目 credentials 里（不依赖任何 provider 扩展）。
 				if (error instanceof Error && /^HTTP 40[13]$/.test(error.message)) {
-					throw new Error(`${error.message}: Command Code 用量需要 Pro 及以上套餐的 API key，或用 \`/login commandcode\` 登录`);
+					throw new Error(`${error.message}: Command Code 用量需要 Pro 及以上套餐的 API key（pi 运行时解析，或条目 credentials.apiKey）`);
 				}
 				throw error;
 			}
