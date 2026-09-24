@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { LEGACY_MAP_NAME, MAP_NAME, configPath, readConfig } from "./usage-config.ts";
+import { MAP_NAME, configPath, readConfig } from "./usage-config.ts";
 import { configFingerprint, updateConfig, withConfigLock } from "./usage-store.ts";
 import type { JsonObject, UsageConfig } from "./types.ts";
 
@@ -44,10 +44,8 @@ export function readKnownProviderIds(path: string, builtinIds: ReadonlySet<strin
 
 export function readUsageMap(agentDir: string): UsageMapDocument {
 	const path = join(agentDir, MAP_NAME);
-	const legacyPath = join(agentDir, LEGACY_MAP_NAME);
-	const target = existsSync(path) ? path : legacyPath;
-	if (!existsSync(target)) return { version: MAP_VERSION, aliases: {} };
-	const value: unknown = JSON.parse(readFileSync(target, "utf8"));
+	if (!existsSync(path)) return { version: MAP_VERSION, aliases: {} };
+	const value: unknown = JSON.parse(readFileSync(path, "utf8"));
 	if (!value || typeof value !== "object") return { version: MAP_VERSION, aliases: {} };
 	const document = value as Partial<UsageMapDocument>;
 	return { version: MAP_VERSION, aliases: { ...(document.aliases ?? {}) } };

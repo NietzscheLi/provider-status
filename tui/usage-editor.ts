@@ -38,7 +38,7 @@ interface FieldSpec {
 interface BalanceSection {
 	id: string;
 	label: string;
-	// 该分节对应的配置键前缀；帮助浮层里用它把中文标签映射回 YAML 键。
+	// 该分节对应的配置键前缀；帮助浮层里用它把中文标签映射回 JSON 键。
 	keyPrefix: string;
 	fields: readonly string[];
 }
@@ -384,7 +384,7 @@ function buildSectionRows(draft: JsonObject, options: { showTemplate: boolean; t
 		})),
 		...(options.showTemplate ? [{ id: "template", label: `${padLabel("绑定模板", 14)}${templateValue}`, searchText: "绑定模板 template" }] : []),
 		{ id: "raw", label: `${padLabel("原始 JSON", 14)}编辑整个条目`, searchText: "原始 JSON raw" },
-		{ id: "save", label: `${padLabel("保存", 14)}写入 usage-config.yaml`, searchText: "保存 save" },
+		{ id: "save", label: `${padLabel("保存", 14)}写入 usage-config.json`, searchText: "保存 save" },
 	];
 }
 
@@ -409,7 +409,7 @@ export async function editBalanceEntry(
 				if (!row) return [];
 				if (row.id === "template") return ["  template — 绑定模板后，未覆盖的字段自动继承模板；同名字段以本条目为准。"];
 				if (row.id === "raw") return ["  raw — 直接编辑整个条目的 JSON，保存后整体替换。"];
-				if (row.id === "save") return ["  usage-config.yaml — 写入磁盘；外部并发修改会被指纹校验拦下。"];
+				if (row.id === "save") return ["  usage-config.json — 写入磁盘；外部并发修改会被指纹校验拦下。"];
 				const section = BALANCE_SECTIONS.find((candidate) => candidate.id === row.id);
 				if (!section) return [];
 				const labels = section.fields.map((field) => allRows.find((spec) => spec.id === field)?.label ?? field);

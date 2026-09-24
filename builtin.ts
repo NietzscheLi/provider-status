@@ -44,8 +44,8 @@ export function getBuiltinProviderIds(): Promise<ReadonlySet<string>> {
 
 /**
  * 内置余额查询模板：balances 条目绑定同名 template 时，
- * usage-config.yaml 的 templates 段里没有同名模板也能直接使用。
- * 用户在 yaml 里自定义同名模板时优先级更高。
+ * usage-config.json 的 templates 段里没有同名模板也能直接使用。
+ * 用户在 JSON 里自定义同名模板时优先级更高。
  */
 export const BUILTIN_TEMPLATES: Readonly<Record<string, JsonObject>> = {
 	openrouter: {

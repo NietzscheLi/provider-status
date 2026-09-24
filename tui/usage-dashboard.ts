@@ -1,8 +1,8 @@
 // tui/usage-dashboard.ts
 //
-// usage-config.yaml 编辑面板：两级导航。
+// usage-config.json 编辑面板：两级导航。
 //
-//   主面板  余额配置 / 订阅配置 / 余额模板 / 隔离条目 / 刷新间隔 / 原始 YAML / 退出
+//   主面板  余额配置 / 订阅配置 / 余额模板 / 隔离条目 / 刷新间隔 / 原始 JSON / 退出
 //   分类页  「＋ 新建…」+ 已配置条目列表；Enter 编辑，n 新建，d 删除，Esc 返回
 //
 // 列表每次动作后都从磁盘重新读取；写入走 usage-edit.ts 的定向编辑，
@@ -122,13 +122,13 @@ export async function runUsageDashboard(ctx: ExtensionCommandContext, agentDir: 
 				? [{ id: "orphans", label: `${padLabel("隔离条目", 14)}${Object.keys(state.orphans).length} 项待处理`, searchText: "隔离条目 orphans" }]
 				: []),
 			{ id: "refresh", label: `${padLabel("刷新间隔", 14)}${state.interval} 分钟`, searchText: "刷新间隔 refreshInterval" },
-			{ id: "raw", label: `${padLabel("原始 YAML", 14)}直接编辑 usage-config.yaml`, searchText: "原始 YAML usage-config.yaml" },
+			{ id: "raw", label: `${padLabel("原始 JSON", 14)}直接编辑 usage-config.json`, searchText: "原始 JSON usage-config.json" },
 			{ id: "quit", label: "退出" },
 		];
 
 		const action = await showPersistentShortcutMenu<"quit">(
 			ctx,
-			"usage-config.yaml",
+			"usage-config.json",
 			"",
 			rows,
 			cursor,
@@ -142,7 +142,7 @@ export async function runUsageDashboard(ctx: ExtensionCommandContext, agentDir: 
 						case "templates": return ["  templates — 可复用模板；provider 用 template 绑定后只需覆盖差异字段"];
 						case "orphans": return ["  orphans — models.json 中已不存在的 provider；可恢复到 balances 或彻底删除"];
 						case "refresh": return ["  refreshInterval — 后台刷新间隔（分钟）；条目可用 request.timeoutSeconds 覆盖单次请求超时"];
-						case "raw": return ["  usage-config.yaml — 直接编辑 YAML 源文件；保存时校验指纹，避免覆盖外部修改"];
+						case "raw": return ["  usage-config.json — 直接编辑 JSON 源文件；保存时校验指纹，避免覆盖外部修改"];
 						default: return [];
 					}
 				},
@@ -178,7 +178,7 @@ export async function runUsageDashboard(ctx: ExtensionCommandContext, agentDir: 
 				await editRefreshInterval(ctx, agentDir, state.interval);
 				break;
 			case "raw":
-				await editRawYaml(ctx, agentDir);
+				await editRawConfig(ctx, agentDir);
 				break;
 			default:
 				break;
@@ -467,12 +467,12 @@ async function editRefreshInterval(ctx: ExtensionCommandContext, agentDir: strin
 	if (value === undefined) return;
 	const trimmed = value.trim();
 	try {
-		await editConfigDocument(agentDir, (doc) => {
-			if (!trimmed) doc.delete("refreshInterval");
+		await editConfigDocument(agentDir, (config) => {
+			if (!trimmed) delete config.refreshInterval;
 			else {
 				const parsed = Number(trimmed);
 				if (!Number.isFinite(parsed) || parsed < 1) throw new Error("刷新间隔需要 >= 1 的数字");
-				doc.set("refreshInterval", parsed);
+				config.refreshInterval = parsed;
 			}
 		});
 	} catch (error) {
@@ -480,11 +480,11 @@ async function editRefreshInterval(ctx: ExtensionCommandContext, agentDir: strin
 	}
 }
 
-async function editRawYaml(ctx: ExtensionCommandContext, agentDir: string): Promise<void> {
+async function editRawConfig(ctx: ExtensionCommandContext, agentDir: string): Promise<void> {
 	const path = configPath(agentDir);
 	const before = existsSync(path) ? readFileSync(path, "utf8") : serializeUsageConfig({ templates: {}, balances: {}, subscriptions: {} });
 	const fingerprint = configFingerprint(agentDir);
-	const text = await ctx.ui.editor("usage-config.yaml（原始 YAML）", before);
+	const text = await ctx.ui.editor("usage-config.json（原始 JSON）", before);
 	if (text === undefined) return;
 	try {
 		await overwriteConfigFile(agentDir, text, fingerprint);

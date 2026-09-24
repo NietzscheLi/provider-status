@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
-import { parse } from "yaml";
 import { ExternalModificationError, LockConflictError, configFingerprint, redactSecrets, updateConfig, withConfigLock } from "../usage-store.ts";
 import type { UsageConfig } from "../types.ts";
 
@@ -11,28 +10,28 @@ function makeDir(): string {
 }
 
 function readConfigFile(dir: string): UsageConfig {
-	return parse(readFileSync(join(dir, "usage-config.yaml"), "utf8"), { merge: true }) as UsageConfig;
+	return JSON.parse(readFileSync(join(dir, "usage-config.json"), "utf8")) as UsageConfig;
 }
 
 test("updateConfig 原子写入缺失的配置并保留未知字段", () => {
 	const dir = makeDir();
-	const result = updateConfig(dir, (config) => ({ ...config, customTopLevel: { keep: true }, balances: { demo: { profile: "newapi" } } }));
+	const result = updateConfig(dir, (config) => ({ ...config, customTopLevel: { keep: true }, balances: { demo: { template: "newapi" } } }));
 	assert.equal(result.changed, true);
-	assert.ok(existsSync(join(dir, "usage-config.yaml")));
+	assert.ok(existsSync(join(dir, "usage-config.json")));
 	const saved = readConfigFile(dir);
 	assert.equal(saved.customTopLevel && (saved.customTopLevel as { keep?: boolean }).keep, true);
-	assert.equal((saved.balances as Record<string, unknown>).demo && ((saved.balances as Record<string, { profile?: string }>).demo).profile, "newapi");
-	assert.ok(!existsSync(`${join(dir, "usage-config.yaml")}.tmp-0`), "temp file must be renamed away");
+	assert.equal((saved.balances as Record<string, unknown>).demo && ((saved.balances as Record<string, { template?: string }>).demo).template, "newapi");
+	assert.ok(!existsSync(`${join(dir, "usage-config.json")}.tmp-0`), "temp file must be renamed away");
 });
 
 test("外部修改检测：fingerprint 不匹配时拒绝写入且文件保持不变", () => {
 	const dir = makeDir();
-	writeFileSync(join(dir, "usage-config.yaml"), "balances:\n  demo: {}\n");
+	writeFileSync(join(dir, "usage-config.json"), JSON.stringify({ balances: { demo: {} } }));
 	const stale = configFingerprint(dir);
-	writeFileSync(join(dir, "usage-config.yaml"), "balances:\n  demo: {}\n  other: {}\n");
-	assert.throws(() => updateConfig(dir, () => ({ refreshIntervalMinutes: 9 }), stale), ExternalModificationError);
+	writeFileSync(join(dir, "usage-config.json"), JSON.stringify({ balances: { demo: {}, other: {} } }));
+	assert.throws(() => updateConfig(dir, () => ({ refreshInterval: 9 }), stale), ExternalModificationError);
 	const saved = readConfigFile(dir);
-	assert.equal(saved.refreshIntervalMinutes, undefined);
+	assert.equal(saved.refreshInterval, undefined);
 	assert.ok((saved.balances as Record<string, unknown>).other);
 });
 

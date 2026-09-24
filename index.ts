@@ -32,7 +32,7 @@ export default function providerStatusExtension(pi: ExtensionAPI): void {
 	const agentDir = getAgentDir();
 	const service = new UsageService(agentDir);
 	const path = modelsPath(agentDir);
-	// 配置缺失时初始化基础文件（旧 balance-config.yaml 会一次性迁移）；失败不阻断扩展加载。
+	// 配置缺失时初始化基础文件；失败不阻断扩展加载。
 	void ensureBaseConfigFile(agentDir).catch(() => undefined);
 	let current: string | undefined;
 	let sessionCtx: ExtensionContext | undefined;

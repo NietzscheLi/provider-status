@@ -4,7 +4,6 @@ import { join } from "node:path";
 import test from "node:test";
 import { maskSecret, pairsToHeaders, headersToPairs, parseNumberInput, setValueAtPath, valueAtPath, pruneEmpty } from "../usage-draft.ts";
 import {
-	editConfigDocument,
 	ensureBaseConfigFile,
 	readSectionEntries,
 	removeEntry,
@@ -18,6 +17,10 @@ import { configFingerprint } from "../usage-store.ts";
 
 function makeDir(): string {
 	return mkdtempSync(join("/tmp", "pi-provider-status-edit-"));
+}
+
+function writeJson(dir: string, value: unknown): void {
+	writeFileSync(join(dir, "usage-config.json"), `${JSON.stringify(value, null, 2)}\n`);
 }
 
 test("maskSecret 掩码敏感值", () => {
@@ -54,37 +57,33 @@ test("setValueAtPath 深层写入与清除，并清理空骨架", () => {
 test("ensureBaseConfigFile 初始化基础配置且不覆盖已有文件", async () => {
 	const dir = makeDir();
 	await ensureBaseConfigFile(dir);
-	assert.ok(existsSync(join(dir, "usage-config.yaml")));
+	assert.ok(existsSync(join(dir, "usage-config.json")));
 	const config = readConfig(dir);
 	assert.equal(config.refreshInterval, 5);
 	assert.deepEqual(config.templates, {});
 	assert.deepEqual(config.balances, {});
 	// 已有文件不被覆盖。
-	writeFileSync(join(dir, "usage-config.yaml"), "balances:\n  demo: {}\n");
+	writeJson(dir, { balances: { demo: {} } });
 	await ensureBaseConfigFile(dir);
 	assert.deepEqual(readConfig(dir).balances, { demo: {} });
 });
 
-test("editConfigDocument 定向编辑保留未触碰内容的注释与格式", async () => {
+test("upsertEntry 只替换目标条目，其余条目保持原值", async () => {
 	const dir = makeDir();
-	writeFileSync(join(dir, "usage-config.yaml"), "# 顶部注释\nbalances:\n  demo: {}\n  keep:\n    # keep 的注释\n    template: openrouter\n");
+	writeJson(dir, { balances: { demo: {}, keep: { template: "openrouter" } } });
 	await upsertEntry(dir, "balances", "demo", { template: "sub2api", request: { url: "https://x" } });
-	const text = readFileSync(join(dir, "usage-config.yaml"), "utf8");
-	// 未触碰条目的注释原样保留；被替换条目内部的注释随节点重建（预期行为）。
-	assert.ok(text.includes("# 顶部注释"));
-	assert.ok(text.includes("# keep 的注释"));
-	assert.equal(readConfig(dir).balances!.keep && (readConfig(dir).balances as Record<string, { template?: string }>).keep!.template, "openrouter");
-	const demo = (readConfig(dir).balances as Record<string, { template?: string; request?: { url?: string } }>).demo!;
-	assert.equal(demo.template, "sub2api");
-	assert.equal(demo.request!.url, "https://x");
+	const balances = readConfig(dir).balances as Record<string, { template?: string; request?: { url?: string } }>;
+	assert.equal(balances.keep!.template, "openrouter");
+	assert.equal(balances.demo!.template, "sub2api");
+	assert.equal(balances.demo!.request!.url, "https://x");
 });
 
 test("外部并发修改不阻断定向编辑", async () => {
 	const dir = makeDir();
-	writeFileSync(join(dir, "usage-config.yaml"), "templates:\n  a: {}\nbalances:\n  x: {}\n");
+	writeJson(dir, { templates: { a: {} }, balances: { x: {} } });
 	const before = configFingerprint(dir);
 	// 模拟面板打开后、保存前文件被外部修改。
-	writeFileSync(join(dir, "usage-config.yaml"), "templates:\n  a: {}\n  b: {}\nbalances:\n  x: {}\n  y: {}\n");
+	writeJson(dir, { templates: { a: {}, b: {} }, balances: { x: {}, y: {} } });
 	await upsertEntry(dir, "balances", "x", { template: "a" });
 	const config = readConfig(dir);
 	// 外部新增的条目完好，同时本次修改也生效。
@@ -105,61 +104,24 @@ test("upsertEntry / removeEntry / templateExists", async () => {
 	assert.deepEqual(readSectionEntries(dir, "balances"), {});
 });
 
-test("orphan 恢复是节点移动，保留注释", async () => {
+test("orphan 恢复把条目移回 balances 并清空 orphans", async () => {
 	const dir = makeDir();
-	writeFileSync(join(dir, "usage-config.yaml"), "balances: {}\norphans:\n  gone:\n    # 保住我\n    template: newapi\n");
+	writeJson(dir, { balances: {}, orphans: { gone: { template: "newapi" } } });
 	await restoreOrphanEntry(dir, "gone");
-	const text = readFileSync(join(dir, "usage-config.yaml"), "utf8");
-	assert.ok(text.includes("# 保住我"));
 	const config = readConfig(dir);
-	assert.deepEqual(Object.keys(config.balances as Record<string, unknown>), ["gone"]);
+	assert.deepEqual(config.balances, { gone: { template: "newapi" } });
 	assert.equal(config.orphans, undefined);
-	await overwriteConfigFile(dir, "balances:\n  a: {}\n", configFingerprint(dir));
-	assert.deepEqual(readConfig(dir).balances, { a: {} });
+	// 目标已存在时拒绝恢复。
+	writeJson(dir, { balances: { gone: {} }, orphans: { gone: { template: "newapi" } } });
+	await assert.rejects(restoreOrphanEntry(dir, "gone"), /已存在/);
 });
 
-test("条目里非法的 extractor 值不会产生重复键", async () => {
+test("overwriteConfigFile 校验 JSON 与指纹", async () => {
 	const dir = makeDir();
-	writeFileSync(join(dir, "usage-config.yaml"), "balances:\n  demo:\n    extractor: null\n    validity:\n      path: data\n");
-	await ensureBaseConfigFile(dir);
-	const text = readFileSync(join(dir, "usage-config.yaml"), "utf8");
-	assert.equal(text.match(/^\s*extractor:/gm)?.length, 1);
-	const demo = (readConfig(dir).balances as Record<string, Record<string, unknown>>).demo!;
-	assert.deepEqual(demo.extractor, { validity: { path: "data" } });
-});
-
-test("已有文件里的旧键在加载时迁移为新键，注释保留", async () => {
-	const dir = makeDir();
-	writeFileSync(join(dir, "usage-config.yaml"), [
-		"# 顶部注释",
-		"refreshIntervalMinutes: 7",
-		"# 模板段注释",
-		"profiles:",
-		"  newapi:",
-		"    request: { url: 'https://p' }",
-		"balances:",
-		"  demo:",
-		"    # 绑定注释",
-		"    profile: newapi",
-		"    validity:",
-		"      allTruthy: [success]",
-		"orphanBalances:",
-		"  gone: {}",
-	].join("\n"));
-	await ensureBaseConfigFile(dir);
-	const text = readFileSync(join(dir, "usage-config.yaml"), "utf8");
-	assert.ok(text.includes("# 顶部注释"));
-	assert.ok(text.includes("# 模板段注释"));
-	assert.ok(text.includes("# 绑定注释"));
-	const config = readConfig(dir);
-	assert.equal(config.refreshInterval, 7);
-	assert.equal(config.refreshIntervalMinutes, undefined);
-	assert.equal(config.profiles, undefined);
-	assert.equal(config.orphanBalances, undefined);
-	assert.deepEqual(config.orphans, { gone: {} });
-	assert.equal((config.templates as Record<string, unknown>)!["newapi"] !== undefined, true);
-	const demo = (config.balances as Record<string, Record<string, unknown>>).demo!;
-	assert.equal(demo.template, "newapi");
-	assert.equal(demo.profile, undefined);
-	assert.deepEqual(demo.extractor, { validity: { allTruthy: ["success"] } });
+	writeJson(dir, { balances: { a: {} } });
+	await overwriteConfigFile(dir, JSON.stringify({ balances: { b: {} } }), configFingerprint(dir));
+	assert.deepEqual(readConfig(dir).balances, { b: {} });
+	await assert.rejects(overwriteConfigFile(dir, "{", configFingerprint(dir)), /JSON 无法解析/);
+	await assert.rejects(overwriteConfigFile(dir, "[]", configFingerprint(dir)), /顶层必须是对象/);
+	await assert.rejects(overwriteConfigFile(dir, "{}", "stale-fingerprint"), /外部修改/);
 });

@@ -8,27 +8,23 @@ import providerStatusExtension from "../index.ts";
 // 余额芯片带 md-cash 前缀图标（见 index.ts BALANCE_ICON）。
 const BALANCE_ICON = "\u{f0114}";
 
-const CONFIG = [
-  "templates: {}",
-  "balances:",
-  "  alpha:",
-  "    request:",
-  "      url: https://example.invalid/balance",
-  "    extractor:",
-  "      remainingPath: remaining",
-  "  beta:",
-  "    request:",
-  "      url: https://example.invalid/balance",
-  "    extractor:",
-  "      remainingPath: remaining",
-  "subscriptions:",
-  "  og:",
-  "    adapter: opencode-go",
-].join("\n");
+const CONFIG = {
+  templates: {},
+  balances: {
+    alpha: { request: { url: "https://example.invalid/balance" }, extractor: { remainingPath: "remaining" } },
+    beta: { request: { url: "https://example.invalid/balance" }, extractor: { remainingPath: "remaining" } },
+  },
+  subscriptions: { og: { adapter: "opencode-go" } },
+};
+
+/** 写入配置；overrides 里的段整体替换同名字段（用于测阈值/开关类配置）。 */
+function writeConfig(dir: string, overrides: Record<string, unknown> = {}): void {
+  writeFileSync(join(dir, "usage-config.json"), `${JSON.stringify({ ...CONFIG, ...overrides }, null, 2)}\n`);
+}
 
 function setup() {
   const dir = mkdtempSync(join("/tmp", "pi-provider-status-bk-"));
-  writeFileSync(join(dir, "usage-config.yaml"), CONFIG);
+  writeConfig(dir);
   process.env.PI_CODING_AGENT_DIR = dir;
 
   let failFetch = false;
@@ -220,7 +216,7 @@ test("resetThresholds 覆盖默认阈值并作用到状态栏文本", async () =
   try {
     // 已用 90%：默认阈值（5h 剩余 <80）会显示倒计时，把阈值覆盖成 5 后不再显示。
     const dir = process.env.PI_CODING_AGENT_DIR!;
-    writeFileSync(join(dir, "usage-config.yaml"), `${CONFIG}\n    resetThresholds:\n      '5h': 5\n`);
+    writeConfig(dir, { subscriptions: { og: { adapter: "opencode-go", resetThresholds: { "5h": 5 } } } });
     harness.handler("model_select")({}, harness.makeCtx("og"));
     await harness.settle();
     assert.equal(harness.statuses.get("quota"), "5h 90%");
@@ -264,7 +260,7 @@ test("cache_warming_decision：额度窗口达到阈值时拒绝预热，余额�
     assert.equal(decision({}, subscriptionCtx), undefined);
 
     // 收紧到 50% 后拦截本次预热。
-    writeFileSync(join(dir, "usage-config.yaml"), `${CONFIG}\ncacheWarmingStopPercent: 50\n`);
+    writeConfig(dir, { cacheWarmingStopPercent: 50 });
     assert.deepEqual(decision({}, subscriptionCtx), { action: "stop" });
 
     // 余额型 provider 没有窗口数据：不拦截。
@@ -281,11 +277,11 @@ test("在途 reconcile 期间到达的 rename 事件排队补跑，不会被丢�
   const harness = setup();
   try {
     const dir = process.env.PI_CODING_AGENT_DIR!;
-    const configPath = join(dir, "usage-config.yaml");
+    const configPath = join(dir, "usage-config.json");
     // reconcile 需要 models.json 存在（生产环境由 pi/model-manager 维护）。
     writeFileSync(join(dir, "models.json"), JSON.stringify({ providers: {} }));
     const readConfigText = () => readFileSync(configPath, "utf8");
-    assert.match(readConfigText(), /alpha:/);
+    assert.match(readConfigText(), /"alpha":/);
 
     // 连续两次 rename：第一次在途时第二次入队；缺队列时链路会停在 gamma。
     harness.emitModelsChanged({ events: [{ type: "provider-rename", oldId: "alpha", newId: "gamma" }] });
@@ -295,7 +291,7 @@ test("在途 reconcile 期间到达的 rename 事件排队补跑，不会被丢�
     while (!/"delta":/.test(readConfigText()) && Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 25));
     }
-    // YAML 文档会把键写成带引号形式："delta"。
+    // JSON 里的键都带引号："delta"。
     assert.ok(/"delta":/.test(readConfigText()), `第二次 rename 未被补跑，当前配置：\n${readConfigText()}`);
     assert.doesNotMatch(readConfigText(), /"alpha":|"gamma":/);
   } finally {

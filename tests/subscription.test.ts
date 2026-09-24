@@ -1,9 +1,8 @@
-// 订阅适配器与迁移的回归测试：纯解析器、抓取分派、UsageService 类型判定、旧配置迁移。
+// 订阅适配器回归测试：纯解析器、抓取分派、UsageService 类型判定。
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
-import { parse as parseYaml } from "yaml";
 import { DEFAULT_RESET_THRESHOLDS, FALLBACK_RESET_THRESHOLD, formatResetCountdown, renderQuotaText } from "../render.ts";
 import {
 	defaultBaseUrl,
@@ -17,7 +16,6 @@ import {
 	parseOpenCodeGoUsage,
 	suggestAdapter,
 } from "../subscription.ts";
-import { ensureBaseConfigFile, migrateLegacyConfig } from "../usage-edit.ts";
 import { resetThresholdsFor } from "../usage-service.ts";
 import { UsageService } from "../usage-service.ts";
 
@@ -254,16 +252,11 @@ test("fetchSubscriptionUsage：commandcode 401/403 给出套餐/登录提示", a
 
 test("UsageService 按配置分派订阅/余额并记录 kind", async () => {
 	const dir = makeDir();
-	writeFileSync(join(dir, "usage-config.yaml"), [
-		"templates: {}",
-		"balances:",
-		"  relay:",
-		"    request: { url: 'https://relay.example/v1/usage' }",
-		"    extractor: { remainingPath: remaining }",
-		"subscriptions:",
-		"  opencode-go:",
-		"    adapter: opencode-go",
-	].join("\n"));
+	writeFileSync(join(dir, "usage-config.json"), JSON.stringify({
+		templates: {},
+		balances: { relay: { request: { url: "https://relay.example/v1/usage" }, extractor: { remainingPath: "remaining" } } },
+		subscriptions: { "opencode-go": { adapter: "opencode-go" } },
+	}, null, 2));
 	const service = new UsageService(dir, (async (input: string | URL) => {
 		return String(input).includes("opencode.ai")
 			? new Response(JSON.stringify({ usage: { rolling: { percent: 10 } } }), { status: 200 })
@@ -284,33 +277,6 @@ test("UsageService 按配置分派订阅/余额并记录 kind", async () => {
 test("resetThresholdsFor 在默认表上按窗口覆盖，非法值忽略", () => {
 	assert.deepEqual(resetThresholdsFor({}), { ...DEFAULT_RESET_THRESHOLDS });
 	assert.deepEqual(resetThresholdsFor({ resetThresholds: { "5h": 50, "1h": 20 } }), { ...DEFAULT_RESET_THRESHOLDS, "5h": 50, "1h": 20 });
-	// YAML 里写成字符串的数字可用；不可转换的值退回默认。
+	// JSON 里写成字符串的数字可用；不可转换的值退回默认。
 	assert.deepEqual(resetThresholdsFor({ resetThresholds: { wk: "35", mo: "abc" } }), { ...DEFAULT_RESET_THRESHOLDS, wk: 35 });
-});
-
-test("旧 balance-config.yaml 一次性迁移到 usage-config.yaml，旧文件保留", async () => {
-	const dir = makeDir();
-	writeFileSync(join(dir, "balance-config.yaml"), [
-		"refreshIntervalMinutes: 9",
-		"profiles:",
-		"  newapi: {}",
-		"providers:",
-		"  demo: { profile: newapi }",
-		"orphanProviders:",
-		"  gone: {}",
-	].join("\n"));
-	assert.equal(migrateLegacyConfig(dir), true);
-	assert.ok(existsSync(join(dir, "balance-config.yaml")));
-	const migrated = parseYaml(readFileSync(join(dir, "usage-config.yaml"), "utf8")) as Record<string, unknown>;
-	assert.equal(migrated.refreshInterval, 9);
-	assert.deepEqual(migrated.templates, { newapi: {} });
-	assert.deepEqual(migrated.balances, { demo: { template: "newapi" } });
-	assert.deepEqual(migrated.orphans, { gone: {} });
-	for (const legacyKey of ["providers", "orphanProviders", "profiles", "orphanBalances", "refreshIntervalMinutes"]) {
-		assert.equal(migrated[legacyKey], undefined, `旧键 ${legacyKey} 应被迁移`);
-	}
-	// 已存在新文件时不重复迁移，也不覆盖。
-	writeFileSync(join(dir, "usage-config.yaml"), "balances: {}\n");
-	await ensureBaseConfigFile(dir);
-	assert.deepEqual(parseYaml(readFileSync(join(dir, "usage-config.yaml"), "utf8")), { balances: {} });
 });

@@ -9,15 +9,15 @@ import providerStatusExtension from "../index.ts";
 // 余额芯片带 md-cash 前缀图标（见 index.ts BALANCE_ICON）。
 const BALANCE_ICON = "\u{f0114}";
 
-const CONFIG = [
-  "templates: {}",
-  "balances:",
-  "  demo:",
-  "    request:",
-  "      url: https://example.invalid/balance",
-  "    extractor:",
-  "      remainingPath: remaining",
-].join("\n");
+const CONFIG = {
+	templates: {},
+	balances: {
+		demo: {
+			request: { url: "https://example.invalid/balance" },
+			extractor: { remainingPath: "remaining" },
+		},
+	},
+};
 
 interface Harness {
   commands: Map<string, { handler: (args: string, ctx: unknown) => Promise<void> }>;
@@ -31,7 +31,7 @@ interface Harness {
 
 function setup(hangFetch: boolean): Harness {
   const dir = mkdtempSync(join("/tmp", "pi-provider-status-nb-"));
-  writeFileSync(join(dir, "usage-config.yaml"), CONFIG);
+  writeFileSync(join(dir, "usage-config.json"), JSON.stringify(CONFIG, null, 2));
   process.env.PI_CODING_AGENT_DIR = dir;
 
   let finishFetch: ((response: Response) => void) | undefined;

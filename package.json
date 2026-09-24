@@ -33,9 +33,6 @@
       "./index.ts"
     ]
   },
-  "dependencies": {
-    "yaml": "2.8.3"
-  },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": ">=0.86.0",
     "@earendil-works/pi-tui": ">=0.75.0"

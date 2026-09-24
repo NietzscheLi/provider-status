@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
-import { parse } from "yaml";
 import { ExternalModificationError } from "../usage-store.ts";
 import { readUsageMap, reconcileProviders } from "../reconcile.ts";
 import type { UsageConfig } from "../types.ts";
@@ -11,20 +10,20 @@ function makeDir(): string {
 	return mkdtempSync(join("/tmp", "pi-provider-status-reconcile-"));
 }
 
-function seed(dir: string, yaml: string, providers: string[]): string {
-	writeFileSync(join(dir, "usage-config.yaml"), yaml);
+function seed(dir: string, config: unknown, providers: string[]): string {
+	writeFileSync(join(dir, "usage-config.json"), `${JSON.stringify(config, null, 2)}\n`);
 	const models = join(dir, "models.json");
 	writeFileSync(models, JSON.stringify({ providers: Object.fromEntries(providers.map((id) => [id, { api: "openai-completions" }])) }));
 	return models;
 }
 
 function readConfig(dir: string): UsageConfig {
-	return parse(readFileSync(join(dir, "usage-config.yaml"), "utf8"), { merge: true }) as UsageConfig;
+	return JSON.parse(readFileSync(join(dir, "usage-config.json"), "utf8")) as UsageConfig;
 }
 
 test("显式 rename 事件迁移 balance key 并记录 alias，重复对账幂等", async () => {
 	const dir = makeDir();
-	const models = seed(dir, "balances:\n  old:\n    template: newapi\n", ["new"]);
+	const models = seed(dir, { balances: { old: { template: "newapi" } } }, ["new"]);
 	const first = await reconcileProviders(dir, models, { events: [{ type: "provider-rename", oldId: "old", newId: "new" }] });
 	assert.deepEqual(first.renamed, [{ from: "old", to: "new" }]);
 	assert.equal(first.changed, true);
@@ -37,17 +36,17 @@ test("显式 rename 事件迁移 balance key 并记录 alias，重复对账幂�
 
 test("rename 冲突（newId 已有余额配置）停止自动写入且不改文件", async () => {
 	const dir = makeDir();
-	const models = seed(dir, "balances:\n  old: {}\n  fresh:\n    template: openrouter\n", ["fresh"]);
-	const before = readFileSync(join(dir, "usage-config.yaml"), "utf8");
+	const models = seed(dir, { balances: { old: {}, fresh: { template: "openrouter" } } }, ["fresh"]);
+	const before = readFileSync(join(dir, "usage-config.json"), "utf8");
 	const report = await reconcileProviders(dir, models, { events: [{ type: "provider-rename", oldId: "old", newId: "fresh" }] });
 	assert.deepEqual(report.conflicts, ["fresh"]);
 	assert.equal(report.changed, false);
-	assert.equal(readFileSync(join(dir, "usage-config.yaml"), "utf8"), before);
+	assert.equal(readFileSync(join(dir, "usage-config.json"), "utf8"), before);
 });
 
 test("删除的 Provider 默认保留为 orphan，确认后隔离进 orphans 且可恢复", async () => {
 	const dir = makeDir();
-	const models = seed(dir, "balances:\n  gone:\n    template: newapi\n  stay: {}\n", ["stay"]);
+	const models = seed(dir, { balances: { gone: { template: "newapi" }, stay: {} } }, ["stay"]);
 	const kept = await reconcileProviders(dir, models);
 	assert.deepEqual(kept.orphan, ["gone"]);
 	assert.equal(kept.changed, false);
@@ -66,7 +65,7 @@ test("删除的 Provider 默认保留为 orphan，确认后隔离进 orphans 且
 
 test("Provider ID 中的点号与连字符按字面 key 处理", async () => {
 	const dir = makeDir();
-	const models = seed(dir, "balances:\n  \"Toioto-Codex-0.25\": {}\n", ["Toioto-Codex-0.25"]);
+	const models = seed(dir, { balances: { "Toioto-Codex-0.25": {} } }, ["Toioto-Codex-0.25"]);
 	const report = await reconcileProviders(dir, models);
 	assert.deepEqual(report.existing, ["Toioto-Codex-0.25"]);
 	assert.equal(report.orphan.length, 0);
@@ -74,11 +73,11 @@ test("Provider ID 中的点号与连字符按字面 key 处理", async () => {
 
 test("prune 确认回调期间外部修改配置时，对账拒绝写入且文件保持原样", async () => {
 	const dir = makeDir();
-	const models = seed(dir, "balances:\n  gone: {}\n", []);
+	const models = seed(dir, { balances: { gone: {} } }, []);
 	const promise = reconcileProviders(dir, models, {
 		confirmPrune: async () => {
 			// 模拟锁内 fingerprint 采集之后、写入之前的外部编辑。
-			writeFileSync(join(dir, "usage-config.yaml"), "balances:\n  gone: {}\n  manual: {}\n");
+			writeFileSync(join(dir, "usage-config.json"), JSON.stringify({ balances: { gone: {}, manual: {} } }, null, 2));
 			return true;
 		},
 	});
@@ -91,7 +90,7 @@ test("prune 确认回调期间外部修改配置时，对账拒绝写入且文�
 
 test("provider-delete 事件不删除 balance 配置，等待人工确认", async () => {
 	const dir = makeDir();
-	const models = seed(dir, "balances:\n  old: {}\n", []);
+	const models = seed(dir, { balances: { old: {} } }, []);
 	const report = await reconcileProviders(dir, models, { events: [{ type: "provider-delete", providerId: "old" }] });
 	assert.deepEqual(report.orphan, ["old"]);
 	assert.equal(report.changed, false);
@@ -101,7 +100,7 @@ test("provider-delete 事件不删除 balance 配置，等待人工确认", asyn
 
 test("订阅型 provider 不计入 without balance config", async () => {
 	const dir = makeDir();
-	const models = seed(dir, "subscriptions:\n  commandcode:\n    adapter: commandcode\n", ["commandcode", "other"]);
+	const models = seed(dir, { subscriptions: { commandcode: { adapter: "commandcode" } } }, ["commandcode", "other"]);
 	const report = await reconcileProviders(dir, models);
 	assert.deepEqual(report.added, ["other"]);
 	assert.deepEqual(report.orphan, []);
@@ -109,7 +108,7 @@ test("订阅型 provider 不计入 without balance config", async () => {
 
 test("pi 内置 provider（如 openrouter）配置后不算 orphan", async () => {
 	const dir = makeDir();
-	const models = seed(dir, "balances:\n  openrouter: {}\n", []);
+	const models = seed(dir, { balances: { openrouter: {} } }, []);
 	const withBuiltin = await reconcileProviders(dir, models, { builtinIds: new Set(["openrouter"]) });
 	assert.deepEqual(withBuiltin.orphan, []);
 	assert.deepEqual(withBuiltin.added, []);

@@ -45,7 +45,7 @@ export async function requestBalance(
 	const config = readConfig(agentDir);
 	const provider = objectAt(config.balances?.[providerId], "") ?? undefined;
 	if (!provider) throw new Error(`Balance is not configured for ${providerId}`);
-	// template 既支持字符串引用（templates 表中的名字），也支持内联对象/YAML 别名展开出的对象。
+	// template 既支持字符串引用（templates 表中的名字），也支持内联对象。
 	const rawTemplate = provider.template;
 	let template: JsonObject | undefined;
 	if (typeof rawTemplate === "string") {

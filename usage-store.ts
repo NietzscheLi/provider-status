@@ -1,8 +1,7 @@
 import { createHash } from "node:crypto";
 import { closeSync, existsSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { stringify as stringifyYaml } from "yaml";
-import { LOCK_NAME, configPath, readConfig } from "./usage-config.ts";
+import { LOCK_NAME, CONFIG_NAME, configPath, readConfig } from "./usage-config.ts";
 import type { JsonObject, UsageConfig } from "./types.ts";
 
 const LOCK_STALE_MS = 30_000;
@@ -10,14 +9,14 @@ const LOCK_TIMEOUT_MS = 5_000;
 
 export class ExternalModificationError extends Error {
 	constructor() {
-		super("usage-config.yaml was modified outside of this extension; refusing to overwrite");
+		super(`${CONFIG_NAME} was modified outside of this extension; refusing to overwrite`);
 		this.name = "ExternalModificationError";
 	}
 }
 
 export class LockConflictError extends Error {
 	constructor() {
-		super("usage-config.yaml is locked by another writer");
+		super(`${CONFIG_NAME} is locked by another writer`);
 		this.name = "LockConflictError";
 	}
 }
@@ -114,8 +113,7 @@ export async function mutateConfig(
 }
 
 export function serializeUsageConfig(config: UsageConfig): string {
-	const body = stringifyYaml(config, { defaultStringType: "QUOTE_DOUBLE", lineWidth: 0 });
-	return `# Managed by pi-provider-status. Quarantined orphan entries are preserved in orphans.\n${body}`;
+	return `${JSON.stringify(config, null, 2)}\n`;
 }
 
 /** Removes any configured credential value from `message` before it reaches UI, logs or tests. */

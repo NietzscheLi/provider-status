@@ -75,6 +75,4 @@ export interface UsageConfig extends JsonObject {
 	subscriptions?: JsonObject;
 	/** 隔离的孤儿余额配置。 */
 	orphans?: JsonObject;
-	// 旧键（读取时归一化，见 usage-config.ts normalizeConfig）：
-	// refreshIntervalMinutes / profiles / orphanBalances / orphanProviders / providers。
 }

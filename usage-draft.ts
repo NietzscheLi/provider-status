@@ -105,7 +105,7 @@ export function stableStringify(value: unknown): string {
 	return JSON.stringify(value) ?? "null";
 }
 
-/** 解析 provider 绑定的模板：字符串引用查 templates 表，内联对象/YAML 别名展开的对象直接返回。 */
+/** 解析 provider 绑定的模板：字符串引用查 templates 表，内联对象直接返回。 */
 export function resolveTemplateBase(entry: JsonObject, templates: Record<string, JsonObject>): JsonObject | undefined {
 	const raw = entry.template;
 	if (typeof raw === "string" && raw) return templates[raw];

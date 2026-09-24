@@ -40,7 +40,7 @@ test("validity firstDefined/fallback/errorPath gate invalid responses", () => {
 
 test("deduplicates concurrent refreshes and preserves stale value", async () => {
   const dir = mkdtempSync(join("/tmp", "pi-provider-status-"));
-  writeFileSync(join(dir, "usage-config.yaml"), "templates: {}\nbalances:\n  demo:\n    request:\n      url: https://example.invalid/balance\n    extractor:\n      remainingPath: remaining\n");
+  writeFileSync(join(dir, "usage-config.json"), JSON.stringify({ templates: {}, balances: { demo: { request: { url: "https://example.invalid/balance" }, extractor: { remainingPath: "remaining" } } } }));
   let calls = 0;
   const fetcher = async () => { calls++; await new Promise((r) => setTimeout(r, 5)); return new Response(JSON.stringify({ remaining: 7 }), { status: 200 }); };
   const service = new UsageService(dir, fetcher, () => 1000);
@@ -50,7 +50,7 @@ test("deduplicates concurrent refreshes and preserves stale value", async () => 
 
 test("failed requests are not cached as fresh; next refresh retries immediately", async () => {
   const dir = mkdtempSync(join("/tmp", "pi-provider-status-"));
-  writeFileSync(join(dir, "usage-config.yaml"), "templates: {}\nbalances:\n  demo:\n    request:\n      url: https://example.invalid/balance\n    extractor:\n      remainingPath: remaining\n");
+  writeFileSync(join(dir, "usage-config.json"), JSON.stringify({ templates: {}, balances: { demo: { request: { url: "https://example.invalid/balance" }, extractor: { remainingPath: "remaining" } } } }));
   let calls = 0;
   const fetcher = async () => { calls++; if (calls === 1) return new Response("boom", { status: 500 }); return new Response(JSON.stringify({ remaining: 7 }), { status: 200 }); };
   const service = new UsageService(dir, fetcher, () => 1000);
@@ -66,7 +66,7 @@ test("failed requests are not cached as fresh; next refresh retries immediately"
 
 test("failure keeps the last success timestamp; stale success retries, fresh success does not", async () => {
   const dir = mkdtempSync(join("/tmp", "pi-provider-status-"));
-  writeFileSync(join(dir, "usage-config.yaml"), "templates: {}\nbalances:\n  demo:\n    request:\n      url: https://example.invalid/balance\n    extractor:\n      remainingPath: remaining\n");
+  writeFileSync(join(dir, "usage-config.json"), JSON.stringify({ templates: {}, balances: { demo: { request: { url: "https://example.invalid/balance" }, extractor: { remainingPath: "remaining" } } } }));
   let calls = 0;
   let clock = 1000;
   const fetcher = async () => { calls++; if (calls === 1) return new Response(JSON.stringify({ remaining: 7 }), { status: 200 }); return new Response("boom", { status: 500 }); };
@@ -94,52 +94,42 @@ test("failure keeps the last success timestamp; stale success retries, fresh suc
 
 test("reports new and orphan provider IDs without mutating config", async () => {
   const dir = mkdtempSync(join("/tmp", "pi-provider-status-"));
-  writeFileSync(join(dir, "usage-config.yaml"), "balances:\n  old: {}\n  keep: {}\n");
+  writeFileSync(join(dir, "usage-config.json"), JSON.stringify({ balances: { old: {}, keep: {} } }));
   const models = join(dir, "models.json"); writeFileSync(models, JSON.stringify({ providers: { keep: {}, fresh: {} } }));
   assert.deepEqual(await reconcileProviders(dir, models), { added: ["fresh"], existing: ["keep"], orphan: ["old"], renamed: [], conflicts: [], quarantined: [], changed: false });
 });
 
-test("supports template aliases/inline objects and relative request URLs", async () => {
+test("supports named and inline templates and relative request URLs", async () => {
   const dir = mkdtempSync(join("/tmp", "pi-provider-status-"));
-  writeFileSync(join(dir, "usage-config.yaml"), [
-    "templates:",
-    "  sub2api: &sub2api",
-    "    request:",
-    "      url: '{{baseUrl}}/v1/usage'",
-    "      headers:",
-    "        Accept: application/json",
-    "    extractor:",
-    "      remainingPath: remaining",
-    "      unit: $",
-    "balances:",
-    "  alias:",
-    "    template: *sub2api",
-    "    request:",
-    "      baseUrl: https://alias.example",
-    "  inline:",
-    "    template:",
-    "      request:",
-    "        url: /v1/usage",
-    "      extractor:",
-    "        remainingPath: remaining",
-    "    request:",
-    "      baseUrl: https://inline.example",
-    "    extractor:",
-    "      unit: 'USD '",
-  ].join("\n"));
+  writeFileSync(join(dir, "usage-config.json"), JSON.stringify({
+    templates: {
+      sub2api: {
+        request: { url: "{{baseUrl}}/v1/usage", headers: { Accept: "application/json" } },
+        extractor: { remainingPath: "remaining", unit: "$" },
+      },
+    },
+    balances: {
+      named: { template: "sub2api", request: { baseUrl: "https://alias.example" } },
+      inline: {
+        template: { request: { url: "/v1/usage" }, extractor: { remainingPath: "remaining" } },
+        request: { baseUrl: "https://inline.example" },
+        extractor: { unit: "USD " },
+      },
+    },
+  }, null, 2));
   const urls: string[] = [];
   const fetcher = async (input: string | URL) => {
     urls.push(String(input));
     return new Response(JSON.stringify({ remaining: 7 }), { status: 200 });
   };
-  assert.equal(await requestBalance(dir, "alias", { apiKey: "sk" }, fetcher), "$7");
+  assert.equal(await requestBalance(dir, "named", { apiKey: "sk" }, fetcher), "$7");
   assert.equal(await requestBalance(dir, "inline", { apiKey: "sk" }, fetcher), "USD 7");
   assert.deepEqual(urls, ["https://alias.example/v1/usage", "https://inline.example/v1/usage"]);
 });
 
 test("balances 里未定义的同名模板回退到内置模板（openrouter）", async () => {
   const dir = mkdtempSync(join("/tmp", "pi-provider-status-"));
-  writeFileSync(join(dir, "usage-config.yaml"), "templates: {}\nbalances:\n  openrouter:\n    template: openrouter\n");
+  writeFileSync(join(dir, "usage-config.json"), JSON.stringify({ templates: {}, balances: { openrouter: { template: "openrouter" } } }));
   let url = "";
   let auth: string | undefined;
   const fetcher = async (input: string | URL, init?: RequestInit) => {
@@ -154,18 +144,10 @@ test("balances 里未定义的同名模板回退到内置模板（openrouter）"
 
 test("用户自定义的同名模板优先于内置模板", async () => {
   const dir = mkdtempSync(join("/tmp", "pi-provider-status-"));
-  writeFileSync(join(dir, "usage-config.yaml"), [
-    "templates:",
-    "  openrouter:",
-    "    request:",
-    "      url: https://custom.example/credits",
-    "    extractor:",
-    "      remainingPath: left",
-    "      unit: C",
-    "balances:",
-    "  openrouter:",
-    "    template: openrouter",
-  ].join("\n"));
+  writeFileSync(join(dir, "usage-config.json"), JSON.stringify({
+    templates: { openrouter: { request: { url: "https://custom.example/credits" }, extractor: { remainingPath: "left", unit: "C" } } },
+    balances: { openrouter: { template: "openrouter" } },
+  }, null, 2));
   const fetcher = async () => new Response(JSON.stringify({ left: 9 }), { status: 200 });
   assert.equal(await requestBalance(dir, "openrouter", { baseUrl: "https://openrouter.ai/api/v1" }, fetcher), "C9");
 });
